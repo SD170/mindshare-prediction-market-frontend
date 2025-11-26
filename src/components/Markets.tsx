@@ -59,6 +59,21 @@ export default function Markets() {
   
   const isAdmin = account && account.toLowerCase() === CONFIG.ADMIN_WALLET.toLowerCase();
   const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+  const ENABLE_CACHE = import.meta.env.VITE_ENABLE_CACHE === 'true';
+
+  // Helper to update cache after on-chain writes
+  const updateCache = async (marketAddress: string, userAddress?: string) => {
+    if (!ENABLE_CACHE) return;
+    try {
+      await fetch(`${API_BASE}/api/cache/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ marketAddress, userAddress }),
+      });
+    } catch (error) {
+      console.error('Cache update failed:', error);
+    }
+  };
 
   // Update current time every second for countdown timers
   useEffect(() => {
@@ -147,12 +162,49 @@ export default function Markets() {
     if (!signer || !account) return;
     
     try {
-      const market = new ethers.Contract(marketAddress, MARKET_ABI, signer);
-      const [accountInfo, pools, winner] = await Promise.all([
-        market.a(account) as Promise<[bigint, bigint, boolean]>,
-        market.pools() as Promise<{ A: bigint; B: bigint } | [bigint, bigint]>,
-        market.winner() as Promise<bigint | number>,
-      ]);
+      let accountInfo: [bigint, bigint, boolean];
+      let pools: { A: bigint; B: bigint } | [bigint, bigint];
+      let winner: bigint | number;
+
+      if (ENABLE_CACHE) {
+        // Fetch from API cache
+        const [userRes, marketRes] = await Promise.all([
+          fetch(`${API_BASE}/api/markets/${marketAddress}/user/${account}`),
+          fetch(`${API_BASE}/api/markets/${marketAddress}/info`),
+        ]);
+        
+        if (userRes.ok && marketRes.ok) {
+          const userData = await userRes.json();
+          const marketData = await marketRes.json();
+          
+          accountInfo = [
+            BigInt(userData.aClaims),
+            BigInt(userData.bClaims),
+            userData.redeemed,
+          ];
+          pools = {
+            A: BigInt(marketData.pools.A),
+            B: BigInt(marketData.pools.B),
+          };
+          winner = marketData.winner || 0;
+        } else {
+          // Fallback to on-chain if API fails
+          const market = new ethers.Contract(marketAddress, MARKET_ABI, signer);
+          [accountInfo, pools, winner] = await Promise.all([
+            market.a(account) as Promise<[bigint, bigint, boolean]>,
+            market.pools() as Promise<{ A: bigint; B: bigint } | [bigint, bigint]>,
+            market.winner() as Promise<bigint | number>,
+          ]);
+        }
+      } else {
+        // Direct on-chain read
+        const market = new ethers.Contract(marketAddress, MARKET_ABI, signer);
+        [accountInfo, pools, winner] = await Promise.all([
+          market.a(account) as Promise<[bigint, bigint, boolean]>,
+          market.pools() as Promise<{ A: bigint; B: bigint } | [bigint, bigint]>,
+          market.winner() as Promise<bigint | number>,
+        ]);
+      }
 
       const aClaims = accountInfo[0];
       const bClaims = accountInfo[1];
@@ -213,6 +265,17 @@ export default function Markets() {
     }
 
     try {
+      if (ENABLE_CACHE) {
+        // Fetch from API cache
+        const response = await fetch(`${API_BASE}/api/user/${account}/balance`);
+        if (response.ok) {
+          const data = await response.json();
+          setBalance(ethers.formatEther(data.balance));
+          return;
+        }
+      }
+      
+      // Fallback to on-chain read
       const stakeToken = new ethers.Contract(contractAddresses.stakeToken, STAKE_TOKEN_ABI, signer);
       if (!stakeToken || typeof stakeToken.balanceOf !== 'function') {
         console.error('Invalid contract instance - balanceOf is not a function');
@@ -264,18 +327,62 @@ export default function Markets() {
               continue;
             }
 
-            const contract = new ethers.Contract(market.marketAddress, MARKET_ABI, signer);
-            const [phase, pools, winner, lockTime, resolveTime] = await Promise.all([
-              contract.phase(),
-              contract.pools(),
-              contract.winner(),
-              contract.lockTime(),
-              contract.resolveTime(),
-            ]);
+            let phase: number;
+            let pools: { A: bigint; B: bigint };
+            let winner: number;
+            let lockTime: bigint;
+            let resolveTime: bigint;
+
+            if (ENABLE_CACHE) {
+              // Fetch from API cache
+              const infoRes = await fetch(`${API_BASE}/api/markets/${market.marketAddress}/info`);
+              if (infoRes.ok) {
+                const info = await infoRes.json();
+                phase = info.phase;
+                pools = {
+                  A: BigInt(info.pools.A),
+                  B: BigInt(info.pools.B),
+                };
+                winner = info.winner || 0;
+                lockTime = BigInt(info.lockTime);
+                resolveTime = BigInt(info.resolveTime);
+              } else {
+                // Fallback to on-chain
+                const contract = new ethers.Contract(market.marketAddress, MARKET_ABI, signer);
+                const [phaseData, poolsData, winnerData, lockTimeData, resolveTimeData] = await Promise.all([
+                  contract.phase(),
+                  contract.pools(),
+                  contract.winner(),
+                  contract.lockTime(),
+                  contract.resolveTime(),
+                ]);
+                phase = Number(phaseData);
+                pools = { A: poolsData.A, B: poolsData.B };
+                winner = Number(winnerData);
+                lockTime = lockTimeData;
+                resolveTime = resolveTimeData;
+              }
+            } else {
+              // Direct on-chain read
+              const contract = new ethers.Contract(market.marketAddress, MARKET_ABI, signer);
+              const [phaseData, poolsData, winnerData, lockTimeData, resolveTimeData] = await Promise.all([
+                contract.phase(),
+                contract.pools(),
+                contract.winner(),
+                contract.lockTime(),
+                contract.resolveTime(),
+              ]);
+              phase = Number(phaseData);
+              pools = { A: poolsData.A, B: poolsData.B };
+              winner = Number(winnerData);
+              lockTime = lockTimeData;
+              resolveTime = resolveTimeData;
+            }
+            
             infos[market.marketAddress] = {
-              phase: Number(phase),
-              pools: { A: pools.A, B: pools.B },
-              winner: Number(winner),
+              phase,
+              pools,
+              winner,
               lockTime,
               resolveTime,
             };
@@ -340,21 +447,6 @@ export default function Markets() {
       }
       console.log(`  ✅ Market stake token verified: ${marketStakeToken}`);
 
-      // Check market phase
-      const phase = Number(await market.phase());
-      console.log(`  Market phase: ${phase} (0=Trading, 1=Locked, 2=Resolved, 3=Cancelled)`);
-      if (phase !== 0) {
-        throw new Error(`Market is not in Trading phase. Current phase: ${phase}`);
-      }
-
-      // Check lockTime
-      const lockTime = await market.lockTime();
-      const currentTime = BigInt(Math.floor(Date.now() / 1000));
-      console.log(`  Lock time: ${lockTime}, Current time: ${currentTime}`);
-      if (currentTime >= lockTime) {
-        throw new Error(`Market is locked. Lock time has passed.`);
-      }
-
       // Check current allowance
       let currentAllowance = await stakeToken.allowance(userAddress, marketAddress);
       console.log(`  Current allowance: ${ethers.formatEther(currentAllowance)} tokens`);
@@ -400,11 +492,30 @@ export default function Markets() {
         console.log(`  Skipping allowance check (just approved - RPC cache may lag)`);
       }
 
+      // Check market phase and lockTime RIGHT BEFORE deposit (after approval)
+      // This ensures we have the latest state after any transactions
+      const phase = Number(await market.phase());
+      console.log(`  Market phase: ${phase} (0=Trading, 1=Locked, 2=Resolved, 3=Cancelled)`);
+      if (phase !== 0) {
+        throw new Error(`Market is not in Trading phase. Current phase: ${phase}`);
+      }
+
+      // Check lockTime
+      const lockTime = await market.lockTime();
+      const currentTime = BigInt(Math.floor(Date.now() / 1000));
+      console.log(`  Lock time: ${lockTime}, Current time: ${currentTime}`);
+      if (currentTime >= lockTime) {
+        throw new Error(`Market is locked. Lock time has passed.`);
+      }
+
       // Deposit
       console.log(`  Depositing ${amount} tokens on outcome ${outcome}...`);
       const depositTx = await market.deposit(outcome, amountWei);
       await depositTx.wait();
       console.log(`  ✅ Deposit successful!`);
+
+      // Update cache after write
+      await updateCache(marketAddress, userAddress);
 
       alert('Deposit successful!');
       loadMarkets();
@@ -506,29 +617,40 @@ export default function Markets() {
       const tx = await market.redeem();
       await tx.wait();
       
+      // Wait a bit for state to settle
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      // Update cache after write
+      await updateCache(marketAddress, account);
+      
       // Get balance after redeem
       const balanceAfter = await stakeToken.balanceOf(account) as bigint;
       const actualPayout = balanceAfter - balanceBefore;
       
       // Show success with actual payout
-      const actualPayoutStr = ethers.formatEther(actualPayout);
+      const actualPayoutStr = ethers.formatEther(actualPayout >= 0 ? actualPayout : BigInt(0));
       const profitLoss = actualPayout - totalInvested;
-      const profitLossStr = ethers.formatEther(profitLoss);
+      const profitLossStr = ethers.formatEther(profitLoss >= 0 ? profitLoss : -profitLoss);
       
       // Format profit/loss more clearly
       let profitLossDisplay: string;
       if (profitLoss > 0) {
         profitLossDisplay = `Profit: +${profitLossStr} tokens`;
       } else if (profitLoss < 0) {
-        profitLossDisplay = `Loss: ${profitLossStr} tokens`;
+        profitLossDisplay = `Loss: -${profitLossStr} tokens`;
       } else {
         profitLossDisplay = `Break even: 0 tokens`;
       }
       
+      // Determine if user was a winner
+      const isWinner = investedInWinner > 0;
+      
       alert(`✅ Redeemed successfully!\n\n` +
         `Total Invested: ${investedStr} tokens\n` +
+        `Invested in Winner: ${investedInWinnerStr} tokens\n` +
         `Payout Received: ${actualPayoutStr} tokens\n` +
-        `${profitLossDisplay}`);
+        `${profitLossDisplay}\n\n` +
+        `${isWinner ? '✅ You won!' : '❌ You lost (bet on losing outcome)'}`);
       
       loadMarkets();
       loadBalance(); // Refresh balance
@@ -565,6 +687,9 @@ export default function Markets() {
       await tx.wait();
       console.log(`✅ Market closed: ${tx.hash}`);
       
+      // Update cache after write
+      await updateCache(marketAddress);
+      
       // Force backend to sync phases
       try {
         await fetch(`${API_BASE}/api/admin/sync-phases`, { method: 'POST' });
@@ -594,6 +719,10 @@ export default function Markets() {
       const market = new ethers.Contract(marketAddress, MARKET_ABI, signer);
       const tx = await market.settle();
       await tx.wait();
+      
+      // Update cache after write
+      await updateCache(marketAddress);
+      
       alert('Market settled successfully!');
       loadMarkets();
     } catch (error: any) {
@@ -737,7 +866,11 @@ export default function Markets() {
                 <div>Total: {ethers.formatEther(userInvestments[market.marketAddress].totalInvested)} tokens</div>
                 {info.phase === 2 && (
                   <div>
-                    {userInvestments[market.marketAddress].redeemed ? (
+                    {userInvestments[market.marketAddress].totalInvested === BigInt(0) ? (
+                      <div>
+                        <strong>Status:</strong> <span style={{ color: '#666' }}>No investment</span>
+                      </div>
+                    ) : userInvestments[market.marketAddress].redeemed ? (
                       <div>
                         <strong>Status:</strong> <span style={{ color: 'green' }}>✅ Winner - Already Redeemed</span>
                       </div>
