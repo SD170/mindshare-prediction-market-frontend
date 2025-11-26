@@ -1,41 +1,23 @@
-import { useState } from 'react';
-import { useWallet } from './hooks/useWallet';
-import Leaderboard from './components/Leaderboard';
-import Markets from './components/Markets';
-import Faucet from './components/Faucet';
+import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
+import { Navbar } from './components/Navbar';
+import { Home } from './pages/Home';
+import { MarketsPage } from './pages/MarketsPage';
+import { LeaderboardPage } from './pages/LeaderboardPage';
+import { FaucetPage } from './pages/FaucetPage';
 
 function App() {
-  const { account, connect, disconnect, isConnected } = useWallet();
-  const [activeTab, setActiveTab] = useState<'leaderboard' | 'markets' | 'faucet'>('leaderboard');
-
   return (
-    <div>
-      <header>
-        <h1>Mindshare Prediction Markets</h1>
-        <div>
-          {!isConnected ? (
-            <button onClick={connect}>Connect Wallet</button>
-          ) : (
-            <div>
-              <span>Connected: {account}</span>
-              <button onClick={disconnect}>Disconnect</button>
-            </div>
-          )}
-        </div>
-      </header>
-
-      <nav>
-        <button onClick={() => setActiveTab('leaderboard')}>Leaderboard</button>
-        <button onClick={() => setActiveTab('markets')}>Markets</button>
-        <button onClick={() => setActiveTab('faucet')}>Faucet</button>
-      </nav>
-
-      <main>
-        {activeTab === 'leaderboard' && <Leaderboard />}
-        {activeTab === 'markets' && <Markets />}
-        {activeTab === 'faucet' && <Faucet />}
-      </main>
-    </div>
+    <Router>
+      <div style={{ minHeight: '100vh', backgroundColor: '#000' }}>
+        <Navbar />
+        <Routes>
+          <Route path="/" element={<Home />} />
+          <Route path="/markets" element={<MarketsPage />} />
+          <Route path="/leaderboard" element={<LeaderboardPage />} />
+          <Route path="/faucet" element={<FaucetPage />} />
+        </Routes>
+      </div>
+    </Router>
   );
 }
 

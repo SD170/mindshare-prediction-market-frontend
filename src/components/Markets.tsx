@@ -1,49 +1,16 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { ethers } from 'ethers';
 import { useWallet } from '../hooks/useWallet';
 import { CONFIG, MARKET_ABI, STAKE_TOKEN_ABI } from '../config';
 import { useContracts } from '../hooks/useContracts';
-
-interface Market {
-  type: string;
-  projectName?: string;
-  projectA?: string;
-  projectB?: string;
-  marketAddress: string;
-  marketId?: string;
-  lockTime: number;
-  resolveTime: number;
-  phase?: number;
-  status?: string;
-}
-
-interface MarketInfo {
-  phase: number;
-  pools: { A: bigint; B: bigint };
-  winner: number;
-  lockTime: bigint;
-  resolveTime: bigint;
-}
-
-interface DepositInfo {
-  user: string;
-  outcome: number;
-  amount: bigint;
-  blockNumber: number;
-}
-
-interface UserInvestment {
-  aClaims: bigint;
-  bClaims: bigint;
-  totalInvested: bigint;
-  potentialPayout: bigint;
-  isWinner: boolean;
-  redeemed: boolean;
-}
+import { useModal } from '../hooks/useModal';
+import { ModalManager } from './ModalManager';
+import type { Market, MarketInfo, DepositInfo, UserInvestment } from '../types/market';
 
 export default function Markets() {
   const { account, signer, isConnected } = useWallet();
   const { contracts: contractAddresses, loading: contractsLoading } = useContracts();
+  const { modal, showSuccess, showError, showLoading, showConfirm, hideModal } = useModal();
   const [markets, setMarkets] = useState<Market[]>([]);
   const [marketInfos, setMarketInfos] = useState<Record<string, MarketInfo>>({});
   const [loading, setLoading] = useState(true);
@@ -56,6 +23,8 @@ export default function Markets() {
   const [marketDeposits, setMarketDeposits] = useState<Record<string, DepositInfo[]>>({});
   const [userInvestments, setUserInvestments] = useState<Record<string, UserInvestment>>({});
   const [loadingDeposits, setLoadingDeposits] = useState<Record<string, boolean>>({});
+  const [expandedDeposits, setExpandedDeposits] = useState<Record<string, boolean>>({});
+  const marketsRef = useRef<HTMLDivElement>(null);
   
   const isAdmin = account && account.toLowerCase() === CONFIG.ADMIN_WALLET.toLowerCase();
   const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
@@ -147,11 +116,14 @@ export default function Markets() {
         }
       }
 
+      // Sort deposits by block number (most recent first)
+      deposits.sort((a, b) => b.blockNumber - a.blockNumber);
+      
       console.log(`✅ Parsed ${deposits.length} deposits`);
       setMarketDeposits(prev => ({ ...prev, [marketAddress]: deposits }));
     } catch (error: any) {
       console.error('Error loading deposits:', error);
-      alert(`Error loading deposits: ${error.message || 'Unknown error'}`);
+      showError(`Error loading deposits: ${error.message || 'Unknown error'}`, 'Error');
     } finally {
       setLoadingDeposits(prev => ({ ...prev, [marketAddress]: false }));
     }
@@ -517,7 +489,7 @@ export default function Markets() {
       // Update cache after write
       await updateCache(marketAddress, userAddress);
 
-      alert('Deposit successful!');
+      showSuccess('Deposit successful!', 'Success');
       loadMarkets();
       loadBalance(); // Refresh balance after deposit
       loadDeposits(marketAddress); // Reload deposits list
@@ -553,7 +525,7 @@ export default function Markets() {
         }
       }
       
-      alert(`Deposit failed: ${errorMessage}`);
+      showError(`Deposit failed: ${errorMessage}`, 'Deposit Error');
     } finally {
       setDepositing(null);
     }
@@ -598,6 +570,7 @@ export default function Markets() {
       const investedStr = ethers.formatEther(totalInvested);
       const payoutStr = ethers.formatEther(expectedPayout);
       const investedInWinnerStr = ethers.formatEther(investedInWinner);
+      const isWinner = investedInWinner > 0;
       
       const confirmMsg = `Redeem Details:\n\n` +
         `Total Invested: ${investedStr} tokens\n` +
@@ -605,9 +578,19 @@ export default function Markets() {
         `Expected Payout: ${payoutStr} tokens\n\n` +
         `Proceed with redemption?`;
       
-      if (!confirm(confirmMsg)) {
-        return;
-      }
+      showConfirm(confirmMsg, async () => {
+        await executeRedeem(marketAddress, totalInvested, investedInWinner, isWinner);
+      }, 'Confirm Redemption');
+    } catch (error: any) {
+      console.error('Redeem error:', error);
+      showError(`Redeem failed: ${error.message || error.reason || 'Unknown error'}`, 'Redeem Error');
+    }
+  };
+
+  const executeRedeem = async (marketAddress: string, totalInvested: bigint, investedInWinner: bigint, isWinner: boolean) => {
+    if (!signer || !account) return;
+    try {
+      const market = new ethers.Contract(marketAddress, MARKET_ABI, signer);
       
       // Get balance before redeem
       const stakeToken = new ethers.Contract(contractAddresses.stakeToken, STAKE_TOKEN_ABI, signer);
@@ -628,6 +611,7 @@ export default function Markets() {
       const actualPayout = balanceAfter - balanceBefore;
       
       // Show success with actual payout
+      const investedStr = ethers.formatEther(totalInvested);
       const actualPayoutStr = ethers.formatEther(actualPayout >= 0 ? actualPayout : BigInt(0));
       const profitLoss = actualPayout - totalInvested;
       const profitLossStr = ethers.formatEther(profitLoss >= 0 ? profitLoss : -profitLoss);
@@ -642,15 +626,14 @@ export default function Markets() {
         profitLossDisplay = `Break even: 0 tokens`;
       }
       
-      // Determine if user was a winner
-      const isWinner = investedInWinner > 0;
-      
-      alert(`✅ Redeemed successfully!\n\n` +
+      const successMsg = `✅ Redeemed successfully!\n\n` +
         `Total Invested: ${investedStr} tokens\n` +
-        `Invested in Winner: ${investedInWinnerStr} tokens\n` +
+        `Invested in Winner: ${ethers.formatEther(investedInWinner)} tokens\n` +
         `Payout Received: ${actualPayoutStr} tokens\n` +
         `${profitLossDisplay}\n\n` +
-        `${isWinner ? '✅ You won!' : '❌ You lost (bet on losing outcome)'}`);
+        `${isWinner ? '✅ You won!' : '❌ You lost (bet on losing outcome)'}`;
+      
+      showSuccess(successMsg, 'Redemption Complete');
       
       loadMarkets();
       loadBalance(); // Refresh balance
@@ -658,8 +641,8 @@ export default function Markets() {
       // Reload user investment to update redeemed status
       await loadUserInvestment(marketAddress);
     } catch (error: any) {
-      console.error('Redeem error:', error);
-      alert(`Redeem failed: ${error.message || error.reason || 'Unknown error'}`);
+      console.error('Execute redeem error:', error);
+      showError(`Redeem failed: ${error.message || error.reason || 'Unknown error'}`, 'Redeem Error');
     }
   };
 
@@ -678,7 +661,7 @@ export default function Markets() {
         const waitSeconds = lockTime - currentTime;
         const waitHours = Math.floor(waitSeconds / 3600);
         const waitMinutes = Math.floor((waitSeconds % 3600) / 60);
-        alert(`Cannot close yet. LockTime: ${new Date(lockTime * 1000).toLocaleString()}\nWait: ${waitHours}h ${waitMinutes}m`);
+        showError(`Cannot close yet. LockTime: ${new Date(lockTime * 1000).toLocaleString()}\nWait: ${waitHours}h ${waitMinutes}m`, 'Cannot Close');
         setClosing(null);
         return;
       }
@@ -686,6 +669,18 @@ export default function Markets() {
       const tx = await market.close();
       await tx.wait();
       console.log(`✅ Market closed: ${tx.hash}`);
+      
+      // Immediately update the phase in state to 1 (Locked) for instant UI feedback
+      setMarketInfos((prev) => {
+        const updated = { ...prev };
+        if (updated[marketAddress]) {
+          updated[marketAddress] = {
+            ...updated[marketAddress],
+            phase: 1, // Locked phase
+          };
+        }
+        return updated;
+      });
       
       // Update cache after write
       await updateCache(marketAddress);
@@ -697,8 +692,8 @@ export default function Markets() {
         console.warn('Failed to sync phases:', e);
       }
       
-      alert('Market closed successfully!');
-      // Reload to sync with backend
+      showSuccess('Market closed successfully!', 'Success');
+      // Reload to sync with backend (this will refresh all data including pools, etc.)
       loadMarkets();
     } catch (error: any) {
       console.error('Close error:', error);
@@ -706,7 +701,7 @@ export default function Markets() {
       if (errorMsg.includes('time') || errorMsg.includes('locked')) {
         errorMsg = `Close failed: lockTime has not been reached yet. ${errorMsg}`;
       }
-      alert(`Close failed: ${errorMsg}`);
+      showError(`Close failed: ${errorMsg}`, 'Close Error');
     } finally {
       setClosing(null);
     }
@@ -720,14 +715,26 @@ export default function Markets() {
       const tx = await market.settle();
       await tx.wait();
       
+      // Immediately update the phase in state to 2 (Resolved) for instant UI feedback
+      setMarketInfos((prev) => {
+        const updated = { ...prev };
+        if (updated[marketAddress]) {
+          updated[marketAddress] = {
+            ...updated[marketAddress],
+            phase: 2, // Resolved phase
+          };
+        }
+        return updated;
+      });
+      
       // Update cache after write
       await updateCache(marketAddress);
       
-      alert('Market settled successfully!');
+      showSuccess('Market settled successfully!', 'Success');
       loadMarkets();
     } catch (error: any) {
       console.error('Settle error:', error);
-      alert(`Settle failed: ${error.message || error.reason || 'Unknown error'}`);
+      showError(`Settle failed: ${error.message || error.reason || 'Unknown error'}`, 'Settle Error');
     } finally {
       setSettling(null);
     }
@@ -746,11 +753,11 @@ export default function Markets() {
         throw new Error(data.error || 'Failed to close markets');
       }
       console.log('Close all results:', data.results);
-      alert('Close all request completed. Check console for details.');
+      showSuccess('Close all request completed. Check console for details.', 'Close All Complete');
       loadMarkets();
     } catch (error: any) {
       console.error('Close-all error:', error);
-      alert(`Close all failed: ${error.message || 'Unknown error'}`);
+      showError(`Close all failed: ${error.message || 'Unknown error'}`, 'Close All Error');
     } finally {
       setClosingAll(false);
     }
@@ -776,268 +783,691 @@ export default function Markets() {
     return `${seconds}s`;
   };
 
-  if (loading) return <div>Loading markets...</div>;
+  // Show loading modal during transactions
+  useEffect(() => {
+    if (depositing || closing || settling || closingAll) {
+      showLoading(depositing ? 'Processing deposit...' : closing ? 'Closing market...' : settling ? 'Settling market...' : 'Closing all markets...');
+    } else {
+      if (modal.type === 'loading') {
+        hideModal();
+      }
+    }
+  }, [depositing, closing, settling, closingAll]);
+
+  // Animate markets on load
+  useEffect(() => {
+    if (marketsRef.current && markets.length > 0) {
+      import('animejs').then(({ animate, stagger }) => {
+        const cards = marketsRef.current?.querySelectorAll('.market-card');
+        if (cards && cards.length > 0 && marketsRef.current) {
+          animate(cards, {
+            opacity: [0, 1],
+            translateY: [30, 0],
+            delay: stagger(100),
+            duration: 600,
+            easing: 'easeOutQuad',
+          });
+        }
+      });
+    }
+  }, [markets]);
+
+  if (loading) {
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '400px', color: '#fff' }}>
+        <div style={{ textAlign: 'center' }}>
+          <div
+            style={{
+              width: '50px',
+              height: '50px',
+              border: '4px solid #1a1a1a',
+              borderTop: '4px solid #db0dce',
+              borderRadius: '50%',
+              margin: '0 auto 16px',
+              animation: 'spin 1s linear infinite',
+            }}
+          />
+          <p>Loading markets...</p>
+        </div>
+      </div>
+    );
+  }
 
   const hasTradingMarkets = markets.some((market) => market.status === 'trading');
   const canInteract = isConnected && signer;
 
-  return (
-    <div>
-      <h2>Markets</h2>
-      {!canInteract && <div>Please connect your wallet to interact with markets.</div>}
-      {isAdmin && (
-        <div style={{ color: 'green', fontWeight: 'bold' }}>
-          Admin Mode: You can close and settle markets
+  const marketCards = markets.map((market) => {
+    const info = marketInfos[market.marketAddress];
+    if (!info) return null;
+
+    const lockTimeNum = Number(info.lockTime);
+    const resolveTimeNum = Number(info.resolveTime);
+    const investment = userInvestments[market.marketAddress];
+    const deposits = marketDeposits[market.marketAddress] || [];
+
+    const timelineBox =
+      info.phase === 0 || info.phase === 1 ? (
+        <div
+          style={{
+            padding: '12px',
+            backgroundColor: 'rgba(219, 13, 206, 0.1)',
+            borderRadius: '8px',
+            marginBottom: '16px',
+            border: '1px solid #db0dce',
+          }}
+        >
+          <div style={{ fontSize: '12px', color: '#db0dce', marginBottom: '4px' }}>
+            {info.phase === 0 ? '⏰ Time until lock' : '⏳ Time until resolve'}
+          </div>
+          <div style={{ fontSize: '18px', fontWeight: '600', color: '#fff' }}>
+            {formatTimeRemaining(info.phase === 0 ? lockTimeNum : resolveTimeNum)}
+          </div>
         </div>
-      )}
-      {isConnected && balance !== null && (
-        <div style={{ marginBottom: '10px', padding: '10px', backgroundColor: '#f0f0f0', borderRadius: '5px' }}>
-          <strong>Your Balance:</strong> {balance} tokens
-          <button onClick={loadBalance} style={{ marginLeft: '10px', padding: '5px 10px' }}>Refresh</button>
+      ) : null;
+
+    const renderPoolCard = (label: string) => (
+      <div
+        style={{
+          padding: '16px',
+          border: '2px solid #db0dce',
+          borderRadius: '8px',
+          backgroundColor: 'rgba(219, 13, 206, 0.05)',
+        }}
+      >
+        <div style={{ fontSize: '12px', color: '#db0dce', marginBottom: '8px' }}>{label}</div>
+        <div style={{ fontSize: '24px', fontWeight: '700', color: '#fff' }}>
+          {label === (market.type === 'top10' ? 'Yes (Top 10)' : market.projectA)
+            ? ethers.formatEther(info.pools.A)
+            : ethers.formatEther(info.pools.B)}
         </div>
-      )}
-      <button onClick={loadMarkets}>Refresh Markets</button>
-      {isAdmin && (
-        <>
-          <button 
-            onClick={async () => {
-              try {
-                await fetch(`${API_BASE}/api/admin/sync-phases`, { method: 'POST' });
-                loadMarkets();
-                alert('Phases synced!');
-              } catch (e) {
-                alert('Failed to sync phases');
-              }
+        <div style={{ fontSize: '12px', color: '#999' }}>tokens</div>
+      </div>
+    );
+
+    const userInvestmentSection =
+      canInteract && investment ? (
+        <div
+          style={{
+            marginTop: '16px',
+            padding: '16px',
+            border: '2px solid #db0dce',
+            borderRadius: '8px',
+            backgroundColor: 'rgba(219, 13, 206, 0.1)',
+          }}
+        >
+          <div style={{ fontSize: '14px', color: '#db0dce', fontWeight: '600', marginBottom: '12px' }}>
+            Your Investment
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '12px' }}>
+            <div>
+              <div style={{ fontSize: '12px', color: '#999', marginBottom: '4px' }}>Outcome 1</div>
+              <div style={{ fontSize: '16px', fontWeight: '600', color: '#fff' }}>{ethers.formatEther(investment.aClaims)} tokens</div>
+            </div>
+            <div>
+              <div style={{ fontSize: '12px', color: '#999', marginBottom: '4px' }}>Outcome 2</div>
+              <div style={{ fontSize: '16px', fontWeight: '600', color: '#fff' }}>{ethers.formatEther(investment.bClaims)} tokens</div>
+            </div>
+          </div>
+          <div
+            style={{
+              paddingTop: '12px',
+              borderTop: '1px solid rgba(219, 13, 206, 0.3)',
+              fontSize: '14px',
+              fontWeight: '600',
+              color: '#fff',
             }}
-            style={{ marginLeft: '10px' }}
           >
-            Sync Phases
-          </button>
-        </>
-      )}
-      {isAdmin && hasTradingMarkets && (
-        <button onClick={closeAllMarkets} disabled={closingAll || !canInteract} style={{ marginLeft: '10px' }}>
-          {closingAll ? 'Closing all...' : 'Close All Markets (On-chain)'}
-        </button>
-      )}
-      
-      {markets.map((market) => {
-        const info = marketInfos[market.marketAddress];
-        if (!info) return null;
-
-        const lockTimeNum = Number(info.lockTime);
-        const resolveTimeNum = Number(info.resolveTime);
-
-        return (
-          <div key={market.marketAddress} style={{ border: '1px solid black', margin: '10px', padding: '10px' }}>
-            <h3>
-              {market.type === 'top10' 
-                ? `Top-10: Will ${market.projectName} be in Top 10?`
-                : `H2H: Who will rank higher - ${market.projectA} or ${market.projectB}?`}
-            </h3>
-            <div><strong>Status:</strong> {getPhaseName(info.phase)}</div>
-            {info.phase === 0 && (
-              <div><strong>Time until lock:</strong> {formatTimeRemaining(lockTimeNum)}</div>
-            )}
-            {info.phase === 1 && (
-              <div><strong>Time until resolve:</strong> {formatTimeRemaining(resolveTimeNum)}</div>
-            )}
-            {market.type === 'top10' ? (
-              <>
-                <div><strong>Yes (Top 10):</strong> {ethers.formatEther(info.pools.A)} tokens</div>
-                <div><strong>No (Not Top 10):</strong> {ethers.formatEther(info.pools.B)} tokens</div>
-              </>
-            ) : (
-              <>
-                <div><strong>{market.projectA}:</strong> {ethers.formatEther(info.pools.A)} tokens</div>
-                <div><strong>{market.projectB}:</strong> {ethers.formatEther(info.pools.B)} tokens</div>
-              </>
-            )}
-            {info.phase === 2 && (
-              <div><strong>Winner:</strong> {info.winner === 1 ? (market.type === 'top10' ? 'Yes (Top 10)' : market.projectA) : (market.type === 'top10' ? 'No (Not Top 10)' : market.projectB)}</div>
-            )}
-
-            {/* User Investment Info */}
-            {isConnected && account && userInvestments[market.marketAddress] && (
-              <div style={{ marginTop: '10px', padding: '10px', backgroundColor: '#e8f5e9', borderRadius: '5px' }}>
-                <strong>Your Investment:</strong>
-                <div>Outcome 1: {ethers.formatEther(userInvestments[market.marketAddress].aClaims)} tokens</div>
-                <div>Outcome 2: {ethers.formatEther(userInvestments[market.marketAddress].bClaims)} tokens</div>
-                <div>Total: {ethers.formatEther(userInvestments[market.marketAddress].totalInvested)} tokens</div>
-                {info.phase === 2 && (
-                  <div>
-                    {userInvestments[market.marketAddress].totalInvested === BigInt(0) ? (
-                      <div>
-                        <strong>Status:</strong> <span style={{ color: '#666' }}>No investment</span>
-                      </div>
-                    ) : userInvestments[market.marketAddress].redeemed ? (
-                      <div>
-                        <strong>Status:</strong> <span style={{ color: 'green' }}>✅ Winner - Already Redeemed</span>
-                      </div>
-                    ) : userInvestments[market.marketAddress].isWinner ? (
-                      <div>
-                        <strong>Potential Payout:</strong> {ethers.formatEther(userInvestments[market.marketAddress].potentialPayout)} tokens
-                        <span style={{ color: 'green' }}> ✅ Winner!</span>
-                      </div>
-                    ) : (
-                      <div>
-                        <strong>Status:</strong> <span style={{ color: 'red' }}>❌ Loser</span>
-                        <div style={{ fontSize: '12px', color: '#666', marginTop: '5px' }}>
-                          (No payout - you bet on the losing outcome)
-                        </div>
-                      </div>
-                    )}
+            Total: {ethers.formatEther(investment.totalInvested)} tokens
+          </div>
+          {info.phase === 2 && (
+            <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px solid rgba(219, 13, 206, 0.3)' }}>
+              {investment.totalInvested === BigInt(0) ? (
+                <div style={{ color: '#999', fontSize: '14px' }}>No investment</div>
+              ) : investment.redeemed ? (
+                <div style={{ color: '#10b981', fontSize: '14px', fontWeight: '600' }}>✅ Winner - Already Redeemed</div>
+              ) : investment.isWinner ? (
+                <div>
+                  <div style={{ fontSize: '12px', color: '#10b981', marginBottom: '4px' }}>Potential Payout</div>
+                  <div style={{ fontSize: '18px', fontWeight: '700', color: '#10b981' }}>
+                    {ethers.formatEther(investment.potentialPayout)} tokens
                   </div>
-                )}
-              </div>
-            )}
-
-            {/* Deposits List */}
-            <div style={{ marginTop: '10px' }}>
-              <button 
-                onClick={() => loadDeposits(market.marketAddress)}
-                disabled={loadingDeposits[market.marketAddress]}
-                style={{ padding: '5px 10px', marginBottom: '10px' }}
-              >
-                {loadingDeposits[market.marketAddress] ? 'Loading...' : 'Show All Bets'}
-              </button>
-              
-              {marketDeposits[market.marketAddress] !== undefined && (
-                marketDeposits[market.marketAddress].length > 0 ? (
-                  <div style={{ marginTop: '10px', border: '1px solid #ccc', padding: '10px', borderRadius: '5px' }}>
-                    <h4>All Bets:</h4>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-                      <div>
-                        <strong>{market.type === 'top10' ? 'Yes (Top 10)' : market.projectA}:</strong>
-                        <ul style={{ margin: '5px 0', paddingLeft: '20px' }}>
-                          {marketDeposits[market.marketAddress]
-                            .filter(d => d.outcome === 1)
-                            .map((d, i) => (
-                              <li key={i} style={{ fontSize: '12px' }}>
-                                {d.user.slice(0, 6)}...{d.user.slice(-4)}: {ethers.formatEther(d.amount)} tokens
-                                {info.phase === 2 && info.winner === 1 && <span style={{ color: 'green' }}> ✅ Winner</span>}
-                              </li>
-                            ))}
-                        </ul>
-                      </div>
-                      <div>
-                        <strong>{market.type === 'top10' ? 'No (Not Top 10)' : market.projectB}:</strong>
-                        <ul style={{ margin: '5px 0', paddingLeft: '20px' }}>
-                          {marketDeposits[market.marketAddress]
-                            .filter(d => d.outcome === 2)
-                            .map((d, i) => (
-                              <li key={i} style={{ fontSize: '12px' }}>
-                                {d.user.slice(0, 6)}...{d.user.slice(-4)}: {ethers.formatEther(d.amount)} tokens
-                                {info.phase === 2 && info.winner === 2 && <span style={{ color: 'green' }}> ✅ Winner</span>}
-                              </li>
-                            ))}
-                        </ul>
-                      </div>
-                    </div>
+                  <div style={{ color: '#10b981', fontSize: '14px', marginTop: '4px' }}>✅ Winner!</div>
+                </div>
+              ) : (
+                <div style={{ color: '#ef4444', fontSize: '14px', fontWeight: '600' }}>
+                  ❌ Loser
+                  <div style={{ fontSize: '12px', color: '#999', marginTop: '4px', fontWeight: '400' }}>
+                    (No payout - you bet on the losing outcome)
                   </div>
-                ) : (
-                  <div style={{ marginTop: '10px', padding: '10px', color: '#666', fontStyle: 'italic' }}>
-                    No bets found for this market yet.
-                  </div>
-                )
+                </div>
               )}
             </div>
-            
-            {info.phase === 0 && canInteract && (
-              <div style={{ marginTop: '10px' }}>
-                <h4>Place Bet</h4>
-                <input type="number" id={`amount-${market.marketAddress}`} placeholder="Amount" defaultValue="100" style={{ marginRight: '10px', padding: '5px' }} />
-                {market.type === 'top10' ? (
-                  <>
-                    <button 
-                      onClick={() => {
-                        const amount = (document.getElementById(`amount-${market.marketAddress}`) as HTMLInputElement)?.value;
-                        if (amount) deposit(market.marketAddress, 1, amount);
-                      }}
-                      disabled={depositing === market.marketAddress}
-                      style={{ marginRight: '5px', padding: '8px 15px' }}
-                    >
-                      Yes (Top 10)
-                    </button>
-                    <button 
-                      onClick={() => {
-                        const amount = (document.getElementById(`amount-${market.marketAddress}`) as HTMLInputElement)?.value;
-                        if (amount) deposit(market.marketAddress, 2, amount);
-                      }}
-                      disabled={depositing === market.marketAddress}
-                      style={{ padding: '8px 15px' }}
-                    >
-                      No (Not Top 10)
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <button 
-                      onClick={() => {
-                        const amount = (document.getElementById(`amount-${market.marketAddress}`) as HTMLInputElement)?.value;
-                        if (amount) deposit(market.marketAddress, 1, amount);
-                      }}
-                      disabled={depositing === market.marketAddress}
-                      style={{ marginRight: '5px', padding: '8px 15px' }}
-                    >
-                      {market.projectA}
-                    </button>
-                    <button 
-                      onClick={() => {
-                        const amount = (document.getElementById(`amount-${market.marketAddress}`) as HTMLInputElement)?.value;
-                        if (amount) deposit(market.marketAddress, 2, amount);
-                      }}
-                      disabled={depositing === market.marketAddress}
-                      style={{ padding: '8px 15px' }}
-                    >
-                      {market.projectB}
-                    </button>
-                  </>
-                )}
-              </div>
-            )}
+          )}
+        </div>
+      ) : null;
 
-            {info.phase === 2 && canInteract && (
-              <button 
-                onClick={() => redeem(market.marketAddress)}
-                disabled={userInvestments[market.marketAddress]?.redeemed === true}
+    const depositsSection = (
+      <div style={{ marginTop: '16px' }}>
+        <button
+          onClick={async () => {
+            const isExpanded = expandedDeposits[market.marketAddress];
+            if (!isExpanded && marketDeposits[market.marketAddress] === undefined) {
+              // Load deposits if not already loaded
+              await loadDeposits(market.marketAddress);
+            }
+            setExpandedDeposits(prev => ({
+              ...prev,
+              [market.marketAddress]: !isExpanded,
+            }));
+          }}
+          disabled={loadingDeposits[market.marketAddress]}
+          style={{
+            padding: '10px 20px',
+            backgroundColor: expandedDeposits[market.marketAddress] ? '#db0dce' : 'transparent',
+            color: expandedDeposits[market.marketAddress] ? '#fff' : '#db0dce',
+            border: '2px solid #db0dce',
+            borderRadius: '8px',
+            cursor: loadingDeposits[market.marketAddress] ? 'not-allowed' : 'pointer',
+            fontWeight: '600',
+            fontSize: '14px',
+            transition: 'all 0.2s',
+            opacity: loadingDeposits[market.marketAddress] ? 0.5 : 1,
+            width: '100%',
+            marginBottom: '12px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '8px',
+          }}
+        >
+          {loadingDeposits[market.marketAddress] ? (
+            'Loading...'
+          ) : expandedDeposits[market.marketAddress] ? (
+            <>
+              <span>▼</span> Hide Bets
+            </>
+          ) : (
+            <>
+              <span>▶</span> Show Top 10 Bets
+            </>
+          )}
+        </button>
+        {expandedDeposits[market.marketAddress] && marketDeposits[market.marketAddress] !== undefined &&
+          (deposits.length > 0 ? (
+            <div
+              style={{
+                marginTop: '12px',
+                border: '2px solid #db0dce',
+                padding: '16px',
+                borderRadius: '8px',
+                backgroundColor: 'rgba(219, 13, 206, 0.05)',
+              }}
+            >
+              <h4 style={{ margin: '0 0 16px 0', color: '#db0dce', fontSize: '16px', fontWeight: '600' }}>
+                Top 10 Latest Bets
+              </h4>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                {[1, 2].map((outcome) => {
+                  const outcomeDeposits = deposits
+                    .filter((d) => d.outcome === outcome)
+                    .slice(0, 10); // Top 10 latest
+                  
+                  return (
+                    <div key={outcome}>
+                      <div style={{ fontSize: '14px', fontWeight: '600', color: '#db0dce', marginBottom: '8px' }}>
+                        {outcome === 1
+                          ? market.type === 'top10'
+                            ? 'Yes (Top 10)'
+                            : market.projectA
+                          : market.type === 'top10'
+                          ? 'No (Not Top 10)'
+                          : market.projectB}
+                        {outcomeDeposits.length > 0 && (
+                          <span style={{ color: '#999', fontSize: '12px', marginLeft: '8px', fontWeight: '400' }}>
+                            ({outcomeDeposits.length})
+                          </span>
+                        )}
+                      </div>
+                      {outcomeDeposits.length > 0 ? (
+                        <ul style={{ margin: 0, padding: 0, listStyle: 'none' }}>
+                          {outcomeDeposits.map((d, i) => (
+                            <li
+                              key={`${d.user}-${i}`}
+                              style={{
+                                fontSize: '12px',
+                                padding: '6px 8px',
+                                marginBottom: '4px',
+                                backgroundColor: 'rgba(219, 13, 206, 0.1)',
+                                borderRadius: '4px',
+                                color: '#fff',
+                              }}
+                            >
+                              {d.user.slice(0, 6)}...{d.user.slice(-4)}: {ethers.formatEther(d.amount)} tokens
+                              {info.phase === 2 && info.winner === outcome && (
+                                <span style={{ color: '#10b981', marginLeft: '8px', fontWeight: '600' }}>✅ Winner</span>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <div style={{ color: '#999', fontSize: '12px', fontStyle: 'italic' }}>No bets yet</div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            <div
+              style={{
+                marginTop: '12px',
+                padding: '16px',
+                color: '#999',
+                fontStyle: 'italic',
+                textAlign: 'center',
+                border: '1px dashed #db0dce',
+                borderRadius: '8px',
+              }}
+            >
+              No bets found for this market yet.
+            </div>
+          ))}
+      </div>
+    );
+
+    const depositActionsSection =
+      info.phase === 0 && canInteract ? (
+        <div
+          style={{
+            marginTop: '20px',
+            padding: '20px',
+            border: '2px solid #db0dce',
+            borderRadius: '8px',
+            backgroundColor: 'rgba(219, 13, 206, 0.05)',
+          }}
+        >
+          <div style={{ fontSize: '16px', fontWeight: '600', color: '#db0dce', marginBottom: '12px' }}>Place Bet</div>
+          <input
+            type="number"
+            id={`amount-${market.marketAddress}`}
+            placeholder="Amount"
+            defaultValue="100"
+            style={{
+              width: '100%',
+              padding: '12px',
+              marginBottom: '12px',
+              backgroundColor: '#000',
+              border: '2px solid #db0dce',
+              borderRadius: '6px',
+              color: '#fff',
+              fontSize: '16px',
+              boxSizing: 'border-box',
+              outline: 'none',
+              textAlign: 'left',
+            }}
+          />
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+            {[1, 2].map((outcome) => (
+              <button
+                key={outcome}
+                onClick={() => {
+                  const amount = (document.getElementById(`amount-${market.marketAddress}`) as HTMLInputElement)?.value;
+                  if (amount) deposit(market.marketAddress, outcome as 1 | 2, amount);
+                }}
+                disabled={depositing === market.marketAddress}
+                style={{
+                  padding: '12px 20px',
+                  backgroundColor: depositing === market.marketAddress ? '#1a1a1a' : '#db0dce',
+                  color: '#fff',
+                  border: '2px solid #db0dce',
+                  borderRadius: '8px',
+                  cursor: depositing === market.marketAddress ? 'not-allowed' : 'pointer',
+                  fontWeight: '600',
+                  fontSize: '14px',
+                  transition: 'all 0.2s',
+                  opacity: depositing === market.marketAddress ? 0.5 : 1,
+                }}
               >
-                {userInvestments[market.marketAddress]?.redeemed ? 'Already Redeemed' : 'Redeem'}
+                {depositing === market.marketAddress
+                  ? 'Processing...'
+                  : outcome === 1
+                  ? market.type === 'top10'
+                    ? 'Yes (Top 10)'
+                    : market.projectA
+                  : market.type === 'top10'
+                  ? 'No (Not Top 10)'
+                  : market.projectB}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null;
+
+    const redeemButton =
+      info.phase === 2 && canInteract && investment && investment.totalInvested > BigInt(0) ? (
+        <button
+          onClick={() => redeem(market.marketAddress)}
+          disabled={investment?.redeemed === true}
+          style={{
+            width: '100%',
+            padding: '14px 20px',
+            marginTop: '16px',
+            backgroundColor: investment?.redeemed ? '#1a1a1a' : '#10b981',
+            color: '#fff',
+            border: `2px solid ${investment?.redeemed ? '#666' : '#10b981'}`,
+            borderRadius: '8px',
+            cursor: investment?.redeemed ? 'not-allowed' : 'pointer',
+            fontWeight: '600',
+            fontSize: '16px',
+            transition: 'all 0.2s',
+            opacity: investment?.redeemed ? 0.5 : 1,
+          }}
+        >
+          {investment?.redeemed ? 'Already Redeemed' : 'Redeem'}
+        </button>
+      ) : null;
+
+    const adminActions =
+      isAdmin && canInteract ? (
+        <div
+          style={{
+            marginTop: '20px',
+            padding: '16px',
+            border: '2px solid #fbbf24',
+            borderRadius: '8px',
+            backgroundColor: 'rgba(251, 191, 36, 0.1)',
+          }}
+        >
+          <div style={{ fontSize: '14px', fontWeight: '600', color: '#fbbf24', marginBottom: '12px' }}>Admin Actions</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+            {info.phase === 0 && (
+              <button
+                onClick={() => closeMarket(market.marketAddress)}
+                disabled={closing === market.marketAddress}
+                style={{
+                  padding: '10px 20px',
+                  backgroundColor: closing === market.marketAddress ? '#1a1a1a' : 'transparent',
+                  color: closing === market.marketAddress ? '#666' : '#fbbf24',
+                  border: '2px solid #fbbf24',
+                  borderRadius: '6px',
+                  cursor: closing === market.marketAddress ? 'not-allowed' : 'pointer',
+                  fontWeight: '600',
+                  fontSize: '14px',
+                  transition: 'all 0.2s',
+                  opacity: closing === market.marketAddress ? 0.5 : 1,
+                }}
+              >
+                {closing === market.marketAddress ? 'Closing...' : 'Close Market'}
               </button>
             )}
-
-            {isAdmin && canInteract && (
-              <div style={{ marginTop: '10px', borderTop: '1px solid black', paddingTop: '10px', backgroundColor: '#fff3cd', borderRadius: '5px', padding: '10px' }}>
-                <h4>Admin Actions</h4>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px' }}>
-                  {info.phase === 0 && (
-                    <button 
-                      onClick={() => closeMarket(market.marketAddress)}
-                      disabled={closing === market.marketAddress}
-                    >
-                      {closing === market.marketAddress ? 'Closing...' : 'Close Market'}
-                    </button>
-                  )}
-                  {info.phase === 1 && (
-                    <button 
-                      onClick={() => settleMarket(market.marketAddress)}
-                      disabled={settling === market.marketAddress}
-                    >
-                      {settling === market.marketAddress ? 'Settling...' : 'Settle Market'}
-                    </button>
-                  )}
-                </div>
-              </div>
+            {info.phase === 1 && (
+              <button
+                onClick={() => settleMarket(market.marketAddress)}
+                disabled={settling === market.marketAddress}
+                style={{
+                  padding: '10px 20px',
+                  backgroundColor: settling === market.marketAddress ? '#1a1a1a' : 'transparent',
+                  color: settling === market.marketAddress ? '#666' : '#10b981',
+                  border: '2px solid #10b981',
+                  borderRadius: '6px',
+                  cursor: settling === market.marketAddress ? 'not-allowed' : 'pointer',
+                  fontWeight: '600',
+                  fontSize: '14px',
+                  transition: 'all 0.2s',
+                  opacity: settling === market.marketAddress ? 0.5 : 1,
+                }}
+              >
+                {settling === market.marketAddress ? 'Settling...' : 'Settle Market'}
+              </button>
             )}
-            
-            {isAdmin && (
-              <div style={{ marginTop: '10px', borderTop: '1px solid black', paddingTop: '10px', backgroundColor: '#e7f3ff', borderRadius: '5px', padding: '10px' }}>
-                <h4>Global Admin Actions</h4>
-                <button 
-                  onClick={async () => {
-                    if (!confirm('Regenerate leaderboard? This will randomize today\'s leaderboard and create a new snapshot.')) {
-                      return;
-                    }
+          </div>
+        </div>
+      ) : null;
+
+
+    return (
+      <div
+        key={market.marketAddress}
+        className="market-card"
+        style={{
+          border: '2px solid #db0dce',
+          borderRadius: '12px',
+          padding: '24px',
+          backgroundColor: '#0a0a0a',
+          transition: 'all 0.3s',
+          position: 'relative',
+          overflow: 'hidden',
+        }}
+      >
+        <h3
+          style={{
+            fontSize: '20px',
+            fontWeight: '600',
+            margin: '0 0 16px 0',
+            color: '#fff',
+            lineHeight: '1.4',
+          }}
+        >
+          {market.type === 'top10'
+            ? `Top-10: Will ${market.projectName} be in Top 10?`
+            : `H2H: Who will rank higher - ${market.projectA} or ${market.projectB}?`}
+        </h3>
+
+        <div
+          style={{
+            display: 'inline-block',
+            padding: '6px 12px',
+            borderRadius: '6px',
+            fontSize: '14px',
+            fontWeight: '600',
+            marginBottom: '16px',
+            backgroundColor:
+              info.phase === 0
+                ? 'rgba(219, 13, 206, 0.2)'
+                : info.phase === 1
+                ? 'rgba(251, 191, 36, 0.2)'
+                : info.phase === 2
+                ? 'rgba(16, 185, 129, 0.2)'
+                : 'rgba(107, 114, 128, 0.2)',
+            color: info.phase === 0 ? '#db0dce' : info.phase === 1 ? '#fbbf24' : info.phase === 2 ? '#10b981' : '#6b7280',
+            border: `1px solid ${info.phase === 0 ? '#db0dce' : info.phase === 1 ? '#fbbf24' : info.phase === 2 ? '#10b981' : '#6b7280'}`,
+          }}
+        >
+          {getPhaseName(info.phase)}
+        </div>
+        {timelineBox}
+        
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr 1fr',
+            gap: '12px',
+            marginBottom: '16px',
+          }}
+        >
+          {renderPoolCard(market.type === 'top10' ? 'Yes (Top 10)' : market.projectA!)}
+          {renderPoolCard(market.type === 'top10' ? 'No (Not Top 10)' : market.projectB!)}
+        </div>
+        
+        {info.phase === 2 && (
+          <div
+            style={{
+              padding: '12px 16px',
+              backgroundColor: 'rgba(16, 185, 129, 0.2)',
+              border: '2px solid #10b981',
+              borderRadius: '8px',
+              marginBottom: '16px',
+            }}
+          >
+            <div style={{ fontSize: '12px', color: '#10b981', marginBottom: '4px' }}>🏆 Winner</div>
+            <div style={{ fontSize: '18px', fontWeight: '600', color: '#10b981' }}>
+              {info.winner === 1 ? (market.type === 'top10' ? 'Yes (Top 10)' : market.projectA) : (market.type === 'top10' ? 'No (Not Top 10)' : market.projectB)}
+            </div>
+          </div>
+        )}
+
+        {userInvestmentSection}
+        {depositsSection}
+        {depositActionsSection}
+        {redeemButton}
+        {adminActions}
+      </div>
+    );
+  });
+
+  return (
+    <div style={{ maxWidth: '1400px', margin: '0 auto', color: '#fff' }}>
+      <ModalManager modal={modal} onClose={hideModal} />
+      
+      {/* Header Section */}
+      <div style={{ marginBottom: '40px' }}>
+        <h1
+          style={{
+            fontSize: 'clamp(32px, 5vw, 48px)',
+            fontWeight: '700',
+            margin: '0 0 16px 0',
+            background: 'linear-gradient(135deg, #db0dce 0%, #fff 100%)',
+            WebkitBackgroundClip: 'text',
+            WebkitTextFillColor: 'transparent',
+            backgroundClip: 'text',
+          }}
+        >
+          Prediction Markets
+        </h1>
+        {!canInteract && (
+          <div
+            style={{
+              padding: '16px',
+              border: '2px solid #db0dce',
+              borderRadius: '8px',
+              backgroundColor: 'rgba(219, 13, 206, 0.1)',
+              color: '#db0dce',
+              marginBottom: '24px',
+            }}
+          >
+            Please connect your wallet to interact with markets.
+          </div>
+        )}
+        {isAdmin && (
+          <div
+            style={{
+              padding: '12px 16px',
+              border: '2px solid #10b981',
+              borderRadius: '8px',
+              backgroundColor: 'rgba(16, 185, 129, 0.1)',
+              color: '#10b981',
+              fontWeight: '600',
+              marginBottom: '24px',
+              display: 'inline-block',
+            }}
+          >
+            ⚡ Admin Mode: You can close and settle markets
+          </div>
+        )}
+        
+        {/* Balance and Actions */}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center', marginBottom: '24px' }}>
+          {isConnected && balance !== null && (
+            <div
+              style={{
+                padding: '12px 20px',
+                border: '2px solid #db0dce',
+                borderRadius: '8px',
+                backgroundColor: 'rgba(219, 13, 206, 0.1)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '12px',
+              }}
+            >
+              <strong style={{ color: '#db0dce' }}>Your Balance:</strong>
+              <span style={{ color: '#fff', fontSize: '18px', fontWeight: '600' }}>{balance} tokens</span>
+              <button
+                onClick={loadBalance}
+                style={{
+                  padding: '6px 12px',
+                  backgroundColor: 'transparent',
+                  color: '#db0dce',
+                  border: '1px solid #db0dce',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  fontSize: '12px',
+                  transition: 'all 0.2s',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = '#db0dce';
+                  e.currentTarget.style.color = '#fff';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = 'transparent';
+                  e.currentTarget.style.color = '#db0dce';
+                }}
+              >
+                Refresh
+              </button>
+            </div>
+          )}
+          <button
+            onClick={loadMarkets}
+            style={{
+              padding: '12px 24px',
+              backgroundColor: 'transparent',
+              color: '#db0dce',
+              border: '2px solid #db0dce',
+              borderRadius: '8px',
+              cursor: 'pointer',
+              fontWeight: '600',
+              transition: 'all 0.2s',
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor = '#db0dce';
+              e.currentTarget.style.color = '#fff';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = 'transparent';
+              e.currentTarget.style.color = '#db0dce';
+            }}
+          >
+            Refresh Markets
+          </button>
+          {isAdmin && (
+            <button
+              onClick={async () => {
+                try {
+                  await fetch(`${API_BASE}/api/admin/sync-phases`, { method: 'POST' });
+                  loadMarkets();
+                  showSuccess('Phases synced!', 'Success');
+                } catch (e) {
+                  showError('Failed to sync phases', 'Sync Error');
+                }
+              }}
+              style={{
+                padding: '12px 24px',
+                backgroundColor: 'transparent',
+                color: '#10b981',
+                border: '2px solid #10b981',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                fontWeight: '600',
+                transition: 'all 0.2s',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = '#10b981';
+                e.currentTarget.style.color = '#fff';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = 'transparent';
+                e.currentTarget.style.color = '#10b981';
+              }}
+            >
+              Sync Phases
+            </button>
+          )}
+          {isAdmin && (
+            <button
+              onClick={() =>
+                showConfirm(
+                  'Regenerate leaderboard? This will randomize today\'s leaderboard and create a new snapshot.',
+                  async () => {
                     try {
                       const response = await fetch(`${API_BASE}/api/admin/regenerate-leaderboard`, {
                         method: 'POST',
@@ -1045,23 +1475,97 @@ export default function Markets() {
                       });
                       const data = await response.json();
                       if (response.ok) {
-                        alert(`✅ Leaderboard regenerated!\n\nNew snapshot index: ${data.index}\nTop 10: ${data.top10.join(', ')}`);
+                        showSuccess(
+                          `✅ Leaderboard regenerated!\n\nNew snapshot index: ${data.index}\nTop 10: ${data.top10.join(', ')}`,
+                          'Success'
+                        );
                       } else {
-                        alert(`Error: ${data.error || 'Failed to regenerate leaderboard'}`);
+                        showError(`Error: ${data.error || 'Failed to regenerate leaderboard'}`, 'Error');
                       }
                     } catch (error: any) {
-                      alert(`Error: ${error.message || 'Failed to regenerate leaderboard'}`);
+                      showError(`Error: ${error.message || 'Failed to regenerate leaderboard'}`, 'Error');
                     }
-                  }}
-                  style={{ padding: '8px 15px' }}
-                >
-                  Regenerate Leaderboard
-                </button>
-              </div>
-            )}
+                  },
+                  'Confirm Regeneration'
+                )
+              }
+              style={{
+                padding: '12px 24px',
+                backgroundColor: 'transparent',
+                color: '#3b82f6',
+                border: '2px solid #3b82f6',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                fontWeight: '600',
+                transition: 'all 0.2s',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = '#3b82f6';
+                e.currentTarget.style.color = '#fff';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = 'transparent';
+                e.currentTarget.style.color = '#3b82f6';
+              }}
+            >
+              Regenerate Leaderboard
+            </button>
+          )}
+          {isAdmin && hasTradingMarkets && (
+            <button
+              onClick={closeAllMarkets}
+              disabled={closingAll || !canInteract}
+              style={{
+                padding: '12px 24px',
+                backgroundColor: closingAll ? '#1a1a1a' : 'transparent',
+                color: closingAll ? '#666' : '#ef4444',
+                border: '2px solid #ef4444',
+                borderRadius: '8px',
+                cursor: closingAll ? 'not-allowed' : 'pointer',
+                fontWeight: '600',
+                transition: 'all 0.2s',
+                opacity: closingAll ? 0.5 : 1,
+              }}
+              onMouseEnter={(e) => {
+                if (!closingAll) {
+                  e.currentTarget.style.backgroundColor = '#ef4444';
+                  e.currentTarget.style.color = '#fff';
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (!closingAll) {
+                  e.currentTarget.style.backgroundColor = 'transparent';
+                  e.currentTarget.style.color = '#ef4444';
+                }
+              }}
+            >
+              {closingAll ? 'Closing all...' : 'Close All Markets'}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Markets Grid */}
+      <div ref={marketsRef} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(400px, 1fr))', gap: '24px' }}>
+        {marketCards}
+      </div>
+      {markets.length === 0 && !loading && (
+        <div
+          style={{
+            textAlign: 'center',
+            padding: '60px 20px',
+            color: '#999',
+            border: '2px dashed #db0dce',
+            borderRadius: '12px',
+          }}
+        >
+          <div style={{ fontSize: '48px', marginBottom: '16px' }}>📊</div>
+          <div style={{ fontSize: '20px', fontWeight: '600', marginBottom: '8px', color: '#fff' }}>
+            No markets available
           </div>
-        );
-      })}
+          <div style={{ fontSize: '14px' }}>Markets will appear here once they are created.</div>
+        </div>
+      )}
     </div>
   );
 }
