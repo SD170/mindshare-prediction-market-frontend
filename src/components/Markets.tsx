@@ -25,9 +25,25 @@ interface MarketInfo {
   resolveTime: bigint;
 }
 
+interface DepositInfo {
+  user: string;
+  outcome: number;
+  amount: bigint;
+  blockNumber: number;
+}
+
+interface UserInvestment {
+  aClaims: bigint;
+  bClaims: bigint;
+  totalInvested: bigint;
+  potentialPayout: bigint;
+  isWinner: boolean;
+  redeemed: boolean;
+}
+
 export default function Markets() {
   const { account, signer, isConnected } = useWallet();
-  const { contracts: contractAddresses } = useContracts();
+  const { contracts: contractAddresses, loading: contractsLoading } = useContracts();
   const [markets, setMarkets] = useState<Market[]>([]);
   const [marketInfos, setMarketInfos] = useState<Record<string, MarketInfo>>({});
   const [loading, setLoading] = useState(true);
@@ -37,6 +53,9 @@ export default function Markets() {
   const [closingAll, setClosingAll] = useState(false);
   const [balance, setBalance] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState<number>(Math.floor(Date.now() / 1000));
+  const [marketDeposits, setMarketDeposits] = useState<Record<string, DepositInfo[]>>({});
+  const [userInvestments, setUserInvestments] = useState<Record<string, UserInvestment>>({});
+  const [loadingDeposits, setLoadingDeposits] = useState<Record<string, boolean>>({});
   
   const isAdmin = account && account.toLowerCase() === CONFIG.ADMIN_WALLET.toLowerCase();
   const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
@@ -50,21 +69,159 @@ export default function Markets() {
   }, []);
 
   useEffect(() => {
-    loadMarkets();
-    loadBalance();
-  }, [isConnected, signer, account, contractAddresses.stakeToken]);
+    if (!contractsLoading) {
+      loadMarkets();
+      loadBalance();
+    }
+  }, [isConnected, signer, account, contractAddresses.stakeToken, contractsLoading]);
+
+
+  // Reload user-specific data when account changes
+  useEffect(() => {
+    if (isConnected && account && signer) {
+      loadBalance();
+      // Reload user investments for all markets
+      markets.forEach(market => {
+        loadUserInvestment(market.marketAddress);
+      });
+    }
+  }, [account, markets, isConnected, signer]); // Reload when account or markets change
+
+  // Load deposits for a market
+  const loadDeposits = async (marketAddress: string) => {
+    if (!signer || loadingDeposits[marketAddress]) return;
+    
+    setLoadingDeposits(prev => ({ ...prev, [marketAddress]: true }));
+    try {
+      const market = new ethers.Contract(marketAddress, MARKET_ABI, signer);
+      
+      // Get current block number and query from a reasonable range
+      // RPC providers limit queries to ~100k blocks, so we'll query from last 50k blocks
+      const currentBlock = await signer.provider!.getBlockNumber();
+      const fromBlock = Math.max(0, currentBlock - 50000); // Query last 50k blocks
+      
+      console.log(`🔍 Querying Deposit events for market ${marketAddress}...`);
+      console.log(`  Querying from block ${fromBlock} to ${currentBlock} (${currentBlock - fromBlock} blocks)`);
+      
+      // Get Deposit events using queryFilter
+      const filter = market.filters.Deposit();
+      const events = await market.queryFilter(filter, fromBlock);
+      console.log(`  Found ${events.length} Deposit events`);
+
+      const deposits: DepositInfo[] = [];
+      for (const event of events) {
+        // Check if it's an EventLog with args
+        if ('args' in event && event.args) {
+          const args = event.args as any;
+          const user = args.user || args[0];
+          const outcome = Number(args.outcome || args[1]);
+          const amount = args.amount || args[2];
+          
+          if (user && outcome && amount) {
+            deposits.push({
+              user: typeof user === 'string' ? user : user.toString(),
+              outcome,
+              amount: typeof amount === 'bigint' ? amount : BigInt(amount.toString()),
+              blockNumber: event.blockNumber || 0,
+            });
+          } else {
+            console.warn('⚠️  Invalid event args:', args);
+          }
+        } else {
+          console.warn('⚠️  Event missing args:', event);
+        }
+      }
+
+      console.log(`✅ Parsed ${deposits.length} deposits`);
+      setMarketDeposits(prev => ({ ...prev, [marketAddress]: deposits }));
+    } catch (error: any) {
+      console.error('Error loading deposits:', error);
+      alert(`Error loading deposits: ${error.message || 'Unknown error'}`);
+    } finally {
+      setLoadingDeposits(prev => ({ ...prev, [marketAddress]: false }));
+    }
+  };
+
+  // Load user investment for a market
+  const loadUserInvestment = async (marketAddress: string) => {
+    if (!signer || !account) return;
+    
+    try {
+      const market = new ethers.Contract(marketAddress, MARKET_ABI, signer);
+      const [accountInfo, pools, winner] = await Promise.all([
+        market.a(account) as Promise<[bigint, bigint, boolean]>,
+        market.pools() as Promise<{ A: bigint; B: bigint } | [bigint, bigint]>,
+        market.winner() as Promise<bigint | number>,
+      ]);
+
+      const aClaims = accountInfo[0];
+      const bClaims = accountInfo[1];
+      const redeemed = accountInfo[2];
+      const totalInvested = aClaims + bClaims;
+
+      // Normalize pools object (ethers v6 returns {A,B}, older returns array)
+      const poolA = 'A' in pools ? pools.A : (pools as [bigint, bigint])[0];
+      const poolB = 'B' in pools ? pools.B : (pools as [bigint, bigint])[1];
+      const winnerNum = Number(winner);
+
+      // Calculate potential payout if market is resolved
+      let potentialPayout = BigInt(0);
+      let isWinner = false;
+      const gross = poolA + poolB;
+      
+      // Only calculate if market is resolved (winner > 0)
+      if (winnerNum > 0) {
+        if (winnerNum === 1) {
+          // Winner is outcome 1
+          if (aClaims > 0n) {
+            isWinner = true;
+            if (poolA > 0n) {
+              potentialPayout = (aClaims * gross) / poolA;
+            }
+          }
+        } else if (winnerNum === 2) {
+          // Winner is outcome 2
+          if (bClaims > 0n) {
+            isWinner = true;
+            if (poolB > 0n) {
+              potentialPayout = (bClaims * gross) / poolB;
+            }
+          }
+        }
+      }
+
+      setUserInvestments(prev => ({
+        ...prev,
+        [marketAddress]: {
+          aClaims,
+          bClaims,
+          totalInvested,
+          potentialPayout,
+          isWinner,
+          redeemed,
+        },
+      }));
+    } catch (error) {
+      console.error('Error loading user investment:', error);
+    }
+  };
 
   const loadBalance = async () => {
-    if (!isConnected || !signer || !account || !contractAddresses.stakeToken) {
+    if (!isConnected || !signer || !account || !contractAddresses.stakeToken || contractAddresses.stakeToken === '') {
       setBalance(null);
       return;
     }
 
     try {
       const stakeToken = new ethers.Contract(contractAddresses.stakeToken, STAKE_TOKEN_ABI, signer);
+      if (!stakeToken || typeof stakeToken.balanceOf !== 'function') {
+        console.error('Invalid contract instance - balanceOf is not a function');
+        setBalance(null);
+        return;
+      }
       const bal = await stakeToken.balanceOf(account);
       setBalance(ethers.formatEther(bal));
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error loading balance:', error);
       setBalance(null);
     }
@@ -122,6 +279,12 @@ export default function Markets() {
               lockTime,
               resolveTime,
             };
+
+            // Load deposits and user investment
+            loadDeposits(market.marketAddress);
+            if (account) {
+              loadUserInvestment(market.marketAddress);
+            }
             console.log(`✅ ${marketName}: Phase=${Number(phase)}, Pool A=${ethers.formatEther(pools.A)}, Pool B=${ethers.formatEther(pools.B)}`);
           } catch (error: any) {
             console.error(`❌ Error loading market ${market.marketAddress} (${marketName}):`, error.message || error);
@@ -139,12 +302,19 @@ export default function Markets() {
 
   const deposit = async (marketAddress: string, outcome: 1 | 2, amount: string) => {
     if (!signer) return;
+    
+    // Get fresh account address to ensure we're using the current connected account
+    const currentAccount = await signer.getAddress();
+    if (account && account.toLowerCase() !== currentAccount.toLowerCase()) {
+      console.warn(`⚠️  Account mismatch! UI shows ${account}, but signer is ${currentAccount}. Using current signer.`);
+    }
+    
     setDepositing(marketAddress);
     try {
       const stakeToken = new ethers.Contract(contractAddresses.stakeToken, STAKE_TOKEN_ABI, signer);
       const market = new ethers.Contract(marketAddress, MARKET_ABI, signer);
       const amountWei = ethers.parseEther(amount);
-      const userAddress = await signer.getAddress();
+      const userAddress = currentAccount; // Use fresh address from signer
 
       // Pre-flight checks
       console.log(`🔍 Pre-flight checks for deposit:`);
@@ -189,35 +359,45 @@ export default function Markets() {
       let currentAllowance = await stakeToken.allowance(userAddress, marketAddress);
       console.log(`  Current allowance: ${ethers.formatEther(currentAllowance)} tokens`);
       
+      let justApproved = false;
+      
       // Approve if needed - use max approval to avoid repeated approvals
       if (currentAllowance < amountWei) {
         console.log(`  Approving tokens (using max approval for convenience)...`);
+        console.log(`  ⏳ Waiting for MetaMask approval...`);
         const maxApproval = ethers.MaxUint256;
+        
+        // Send approval transaction - this will show MetaMask popup
         const approveTx = await stakeToken.approve(marketAddress, maxApproval);
+        console.log(`  📝 Approval transaction sent: ${approveTx.hash}`);
+        console.log(`  ⏳ Waiting for transaction confirmation...`);
+        
+        // Wait for transaction to be mined (this waits for user to approve AND transaction to confirm)
         const receipt = await approveTx.wait();
-        console.log(`  ✅ Approval transaction confirmed: ${receipt.hash}`);
-        
-        // Verify approval went through
-        currentAllowance = await stakeToken.allowance(userAddress, marketAddress);
-        console.log(`  Verified allowance: ${ethers.formatEther(currentAllowance)} tokens`);
-        
-        if (currentAllowance < amountWei) {
-          throw new Error('Approval failed. Please try again.');
-        }
+        console.log(`  ✅ Approval transaction confirmed in block ${receipt.blockNumber}`);
+        justApproved = true;
       } else {
         console.log(`  ✅ Already has sufficient allowance`);
       }
 
       // Double-check balance and allowance right before deposit
       const finalBalance = await stakeToken.balanceOf(userAddress);
-      const finalAllowance = await stakeToken.allowance(userAddress, marketAddress);
-      console.log(`  Final check - Balance: ${ethers.formatEther(finalBalance)}, Allowance: ${ethers.formatEther(finalAllowance)}`);
+      console.log(`  Final check - Balance: ${ethers.formatEther(finalBalance)}`);
       
       if (finalBalance < amountWei) {
         throw new Error('Insufficient balance. Balance changed during transaction.');
       }
-      if (finalAllowance < amountWei) {
-        throw new Error('Insufficient allowance. Please approve again.');
+      
+      // If we just approved, skip allowance check (RPC cache lag issue)
+      // The deposit will fail if allowance isn't actually there, which is fine
+      if (!justApproved) {
+        const finalAllowance = await stakeToken.allowance(userAddress, marketAddress);
+        console.log(`  Final check - Allowance: ${ethers.formatEther(finalAllowance)}`);
+        if (finalAllowance < amountWei) {
+          throw new Error('Insufficient allowance. Please approve again.');
+        }
+      } else {
+        console.log(`  Skipping allowance check (just approved - RPC cache may lag)`);
       }
 
       // Deposit
@@ -229,6 +409,8 @@ export default function Markets() {
       alert('Deposit successful!');
       loadMarkets();
       loadBalance(); // Refresh balance after deposit
+      loadDeposits(marketAddress); // Reload deposits list
+      loadUserInvestment(marketAddress); // Reload user investment
     } catch (error: any) {
       console.error('Deposit error:', error);
       
@@ -267,13 +449,92 @@ export default function Markets() {
   };
 
   const redeem = async (marketAddress: string) => {
-    if (!signer) return;
+    if (!signer || !account) return;
     try {
       const market = new ethers.Contract(marketAddress, MARKET_ABI, signer);
+      
+      // Fetch user's account info (claims)
+      const accountInfo = await market.a(account) as [bigint, bigint, boolean];
+      const aClaims = accountInfo[0];
+      const bClaims = accountInfo[1];
+      const totalInvested = aClaims + bClaims;
+      
+      // Fetch market state
+      const pools = await market.pools() as [bigint, bigint];
+      const winner = Number(await market.winner());
+      
+      // Calculate expected payout
+      const poolsA = pools[0];
+      const poolsB = pools[1];
+      const gross = poolsA + poolsB;
+      
+      let expectedPayout = BigInt(0);
+      let investedInWinner = BigInt(0);
+      
+      if (winner === 1) {
+        investedInWinner = aClaims;
+        if (poolsA > 0) {
+          expectedPayout = (aClaims * gross) / poolsA;
+        }
+      } else if (winner === 2) {
+        investedInWinner = bClaims;
+        if (poolsB > 0) {
+          expectedPayout = (bClaims * gross) / poolsB;
+        }
+      }
+      
+      // Show confirmation with details
+      const investedStr = ethers.formatEther(totalInvested);
+      const payoutStr = ethers.formatEther(expectedPayout);
+      const investedInWinnerStr = ethers.formatEther(investedInWinner);
+      
+      const confirmMsg = `Redeem Details:\n\n` +
+        `Total Invested: ${investedStr} tokens\n` +
+        `Invested in Winner (Outcome ${winner}): ${investedInWinnerStr} tokens\n` +
+        `Expected Payout: ${payoutStr} tokens\n\n` +
+        `Proceed with redemption?`;
+      
+      if (!confirm(confirmMsg)) {
+        return;
+      }
+      
+      // Get balance before redeem
+      const stakeToken = new ethers.Contract(contractAddresses.stakeToken, STAKE_TOKEN_ABI, signer);
+      const balanceBefore = await stakeToken.balanceOf(account) as bigint;
+      
+      // Execute redeem
       const tx = await market.redeem();
       await tx.wait();
-      alert('Redeemed successfully!');
+      
+      // Get balance after redeem
+      const balanceAfter = await stakeToken.balanceOf(account) as bigint;
+      const actualPayout = balanceAfter - balanceBefore;
+      
+      // Show success with actual payout
+      const actualPayoutStr = ethers.formatEther(actualPayout);
+      const profitLoss = actualPayout - totalInvested;
+      const profitLossStr = ethers.formatEther(profitLoss);
+      
+      // Format profit/loss more clearly
+      let profitLossDisplay: string;
+      if (profitLoss > 0) {
+        profitLossDisplay = `Profit: +${profitLossStr} tokens`;
+      } else if (profitLoss < 0) {
+        profitLossDisplay = `Loss: ${profitLossStr} tokens`;
+      } else {
+        profitLossDisplay = `Break even: 0 tokens`;
+      }
+      
+      alert(`✅ Redeemed successfully!\n\n` +
+        `Total Invested: ${investedStr} tokens\n` +
+        `Payout Received: ${actualPayoutStr} tokens\n` +
+        `${profitLossDisplay}`);
+      
       loadMarkets();
+      loadBalance(); // Refresh balance
+      
+      // Reload user investment to update redeemed status
+      await loadUserInvestment(marketAddress);
     } catch (error: any) {
       console.error('Redeem error:', error);
       alert(`Redeem failed: ${error.message || error.reason || 'Unknown error'}`);
@@ -466,6 +727,88 @@ export default function Markets() {
             {info.phase === 2 && (
               <div><strong>Winner:</strong> {info.winner === 1 ? (market.type === 'top10' ? 'Yes (Top 10)' : market.projectA) : (market.type === 'top10' ? 'No (Not Top 10)' : market.projectB)}</div>
             )}
+
+            {/* User Investment Info */}
+            {isConnected && account && userInvestments[market.marketAddress] && (
+              <div style={{ marginTop: '10px', padding: '10px', backgroundColor: '#e8f5e9', borderRadius: '5px' }}>
+                <strong>Your Investment:</strong>
+                <div>Outcome 1: {ethers.formatEther(userInvestments[market.marketAddress].aClaims)} tokens</div>
+                <div>Outcome 2: {ethers.formatEther(userInvestments[market.marketAddress].bClaims)} tokens</div>
+                <div>Total: {ethers.formatEther(userInvestments[market.marketAddress].totalInvested)} tokens</div>
+                {info.phase === 2 && (
+                  <div>
+                    {userInvestments[market.marketAddress].redeemed ? (
+                      <div>
+                        <strong>Status:</strong> <span style={{ color: 'green' }}>✅ Winner - Already Redeemed</span>
+                      </div>
+                    ) : userInvestments[market.marketAddress].isWinner ? (
+                      <div>
+                        <strong>Potential Payout:</strong> {ethers.formatEther(userInvestments[market.marketAddress].potentialPayout)} tokens
+                        <span style={{ color: 'green' }}> ✅ Winner!</span>
+                      </div>
+                    ) : (
+                      <div>
+                        <strong>Status:</strong> <span style={{ color: 'red' }}>❌ Loser</span>
+                        <div style={{ fontSize: '12px', color: '#666', marginTop: '5px' }}>
+                          (No payout - you bet on the losing outcome)
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Deposits List */}
+            <div style={{ marginTop: '10px' }}>
+              <button 
+                onClick={() => loadDeposits(market.marketAddress)}
+                disabled={loadingDeposits[market.marketAddress]}
+                style={{ padding: '5px 10px', marginBottom: '10px' }}
+              >
+                {loadingDeposits[market.marketAddress] ? 'Loading...' : 'Show All Bets'}
+              </button>
+              
+              {marketDeposits[market.marketAddress] !== undefined && (
+                marketDeposits[market.marketAddress].length > 0 ? (
+                  <div style={{ marginTop: '10px', border: '1px solid #ccc', padding: '10px', borderRadius: '5px' }}>
+                    <h4>All Bets:</h4>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                      <div>
+                        <strong>{market.type === 'top10' ? 'Yes (Top 10)' : market.projectA}:</strong>
+                        <ul style={{ margin: '5px 0', paddingLeft: '20px' }}>
+                          {marketDeposits[market.marketAddress]
+                            .filter(d => d.outcome === 1)
+                            .map((d, i) => (
+                              <li key={i} style={{ fontSize: '12px' }}>
+                                {d.user.slice(0, 6)}...{d.user.slice(-4)}: {ethers.formatEther(d.amount)} tokens
+                                {info.phase === 2 && info.winner === 1 && <span style={{ color: 'green' }}> ✅ Winner</span>}
+                              </li>
+                            ))}
+                        </ul>
+                      </div>
+                      <div>
+                        <strong>{market.type === 'top10' ? 'No (Not Top 10)' : market.projectB}:</strong>
+                        <ul style={{ margin: '5px 0', paddingLeft: '20px' }}>
+                          {marketDeposits[market.marketAddress]
+                            .filter(d => d.outcome === 2)
+                            .map((d, i) => (
+                              <li key={i} style={{ fontSize: '12px' }}>
+                                {d.user.slice(0, 6)}...{d.user.slice(-4)}: {ethers.formatEther(d.amount)} tokens
+                                {info.phase === 2 && info.winner === 2 && <span style={{ color: 'green' }}> ✅ Winner</span>}
+                              </li>
+                            ))}
+                        </ul>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ marginTop: '10px', padding: '10px', color: '#666', fontStyle: 'italic' }}>
+                    No bets found for this market yet.
+                  </div>
+                )
+              )}
+            </div>
             
             {info.phase === 0 && canInteract && (
               <div style={{ marginTop: '10px' }}>
@@ -522,7 +865,12 @@ export default function Markets() {
             )}
 
             {info.phase === 2 && canInteract && (
-              <button onClick={() => redeem(market.marketAddress)}>Redeem</button>
+              <button 
+                onClick={() => redeem(market.marketAddress)}
+                disabled={userInvestments[market.marketAddress]?.redeemed === true}
+              >
+                {userInvestments[market.marketAddress]?.redeemed ? 'Already Redeemed' : 'Redeem'}
+              </button>
             )}
 
             {isAdmin && canInteract && (
@@ -546,6 +894,36 @@ export default function Markets() {
                     </button>
                   )}
                 </div>
+              </div>
+            )}
+            
+            {isAdmin && (
+              <div style={{ marginTop: '10px', borderTop: '1px solid black', paddingTop: '10px', backgroundColor: '#e7f3ff', borderRadius: '5px', padding: '10px' }}>
+                <h4>Global Admin Actions</h4>
+                <button 
+                  onClick={async () => {
+                    if (!confirm('Regenerate leaderboard? This will randomize today\'s leaderboard and create a new snapshot.')) {
+                      return;
+                    }
+                    try {
+                      const response = await fetch(`${API_BASE}/api/admin/regenerate-leaderboard`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                      });
+                      const data = await response.json();
+                      if (response.ok) {
+                        alert(`✅ Leaderboard regenerated!\n\nNew snapshot index: ${data.index}\nTop 10: ${data.top10.join(', ')}`);
+                      } else {
+                        alert(`Error: ${data.error || 'Failed to regenerate leaderboard'}`);
+                      }
+                    } catch (error: any) {
+                      alert(`Error: ${error.message || 'Failed to regenerate leaderboard'}`);
+                    }
+                  }}
+                  style={{ padding: '8px 15px' }}
+                >
+                  Regenerate Leaderboard
+                </button>
               </div>
             )}
           </div>

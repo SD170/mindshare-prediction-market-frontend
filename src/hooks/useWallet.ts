@@ -46,7 +46,7 @@ export function useWallet() {
     }
   };
 
-  const handleAccountsChanged = (accounts: string[]) => {
+  const handleAccountsChanged = async (accounts: string[]) => {
     if (ignoreAccountChanges && accounts.length > 0) {
       return;
     }
@@ -59,9 +59,23 @@ export function useWallet() {
       setIgnoreAccountChanges(false);
       localStorage.setItem('wallet_disconnected', 'true');
     } else {
-      // User switched accounts
-      setAccount(accounts[0]);
+      // User switched accounts - update signer too
+      const newAccount = accounts[0];
+      setAccount(newAccount);
       localStorage.removeItem('wallet_disconnected');
+      
+      // Update provider and signer for the new account
+      if (window.ethereum) {
+        try {
+          const provider = new ethers.BrowserProvider(window.ethereum);
+          setProvider(provider);
+          const signer = await provider.getSigner();
+          setSigner(signer);
+          console.log(`🔄 Account changed to: ${newAccount}`);
+        } catch (error) {
+          console.error('Error updating signer for new account:', error);
+        }
+      }
     }
   };
 

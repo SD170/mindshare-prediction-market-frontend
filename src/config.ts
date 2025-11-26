@@ -38,6 +38,7 @@ export const MARKET_ABI = [
   "function resolveTime() external view returns (uint64)",
   "function stakeToken() external view returns (address)",
   "function a(address) external view returns (uint128 aClaims, uint128 bClaims, bool redeemed)",
+  "event Deposit(address indexed user, uint8 indexed outcome, uint256 amount)",
 ] as const;
 
 export const MARKET_FACTORY_ABI = [
