@@ -195,21 +195,43 @@ export default function Markets() {
       
       // Only calculate if market is resolved (winner > 0)
       if (winnerNum > 0) {
+        const marketInfo = markets.find(m => m.marketAddress === marketAddress);
+        const marketType = marketInfo?.type || 'unknown';
+        const projectName = marketType === 'top10' 
+          ? marketInfo?.projectName 
+          : `${marketInfo?.projectA} vs ${marketInfo?.projectB}`;
+        
+        console.log(`🔍 Market ${marketAddress} winner determination:`, {
+          winner: winnerNum,
+          aClaims: aClaims.toString(),
+          bClaims: bClaims.toString(),
+          poolA: poolA.toString(),
+          poolB: poolB.toString(),
+          marketType,
+          projectName,
+        });
+        
         if (winnerNum === 1) {
-          // Winner is outcome 1
+          // Winner is outcome 1 (Yes for top10, projectA for h2h)
           if (aClaims > 0n) {
             isWinner = true;
             if (poolA > 0n) {
               potentialPayout = (aClaims * gross) / poolA;
             }
+            console.log(`  ✅ User is winner (bet on outcome 1, winner is 1)`);
+          } else {
+            console.log(`  ❌ User is loser (bet on outcome 2, winner is 1)`);
           }
         } else if (winnerNum === 2) {
-          // Winner is outcome 2
+          // Winner is outcome 2 (No for top10, projectB for h2h)
           if (bClaims > 0n) {
             isWinner = true;
             if (poolB > 0n) {
               potentialPayout = (bClaims * gross) / poolB;
             }
+            console.log(`  ✅ User is winner (bet on outcome 2, winner is 2)`);
+          } else {
+            console.log(`  ❌ User is loser (bet on outcome 1, winner is 2)`);
           }
         }
       }
@@ -481,10 +503,32 @@ export default function Markets() {
       }
 
       // Deposit
-      console.log(`  Depositing ${amount} tokens on outcome ${outcome}...`);
+      const marketInfo = markets.find(m => m.marketAddress === marketAddress);
+      const outcomeLabel = marketInfo?.type === 'top10'
+        ? (outcome === 1 ? 'Yes (Top 10)' : 'No (Not Top 10)')
+        : (outcome === 1 ? marketInfo?.projectA : marketInfo?.projectB);
+      
+      console.log(`  📝 Depositing ${amount} tokens on outcome ${outcome} (${outcomeLabel})...`);
+      console.log(`  Market: ${marketInfo?.type === 'top10' ? marketInfo.projectName : `${marketInfo?.projectA} vs ${marketInfo?.projectB}`}`);
+      
       const depositTx = await market.deposit(outcome, amountWei);
-      await depositTx.wait();
-      console.log(`  ✅ Deposit successful!`);
+      const receipt = await depositTx.wait();
+      console.log(`  ✅ Deposit successful! Transaction: ${receipt.hash}`);
+      
+      // Verify the deposit was recorded correctly
+      const [verifyA, verifyB] = await market.a(userAddress);
+      console.log(`  🔍 Verification - On-chain claims after deposit:`);
+      console.log(`     aClaims (outcome 1): ${ethers.formatEther(verifyA)} tokens`);
+      console.log(`     bClaims (outcome 2): ${ethers.formatEther(verifyB)} tokens`);
+      console.log(`     Expected outcome ${outcome} to have ${amount} tokens`);
+      
+      if (outcome === 1 && verifyA === 0n) {
+        console.error(`  ⚠️  WARNING: Deposited on outcome 1 but aClaims is 0!`);
+      } else if (outcome === 2 && verifyB === 0n) {
+        console.error(`  ⚠️  WARNING: Deposited on outcome 2 but bClaims is 0!`);
+      } else {
+        console.log(`  ✅ Deposit verified correctly on-chain`);
+      }
 
       // Update cache after write
       await updateCache(marketAddress, userAddress);
@@ -900,12 +944,20 @@ export default function Markets() {
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '12px' }}>
             <div>
-              <div style={{ fontSize: '12px', color: '#999', marginBottom: '4px' }}>Outcome 1</div>
-              <div style={{ fontSize: '16px', fontWeight: '600', color: '#fff' }}>{ethers.formatEther(investment.aClaims)} tokens</div>
+              <div style={{ fontSize: '12px', color: '#999', marginBottom: '4px' }}>
+                {market.type === 'top10' ? 'Yes (Top 10)' : market.projectA}
+              </div>
+              <div style={{ fontSize: '16px', fontWeight: '600', color: '#fff' }}>
+                {ethers.formatEther(investment.aClaims)} tokens
+              </div>
             </div>
             <div>
-              <div style={{ fontSize: '12px', color: '#999', marginBottom: '4px' }}>Outcome 2</div>
-              <div style={{ fontSize: '16px', fontWeight: '600', color: '#fff' }}>{ethers.formatEther(investment.bClaims)} tokens</div>
+              <div style={{ fontSize: '12px', color: '#999', marginBottom: '4px' }}>
+                {market.type === 'top10' ? 'No (Not Top 10)' : market.projectB}
+              </div>
+              <div style={{ fontSize: '16px', fontWeight: '600', color: '#fff' }}>
+                {ethers.formatEther(investment.bClaims)} tokens
+              </div>
             </div>
           </div>
           <div
@@ -937,7 +989,14 @@ export default function Markets() {
                 <div style={{ color: '#ef4444', fontSize: '14px', fontWeight: '600' }}>
                   ❌ Loser
                   <div style={{ fontSize: '12px', color: '#999', marginTop: '4px', fontWeight: '400' }}>
-                    (No payout - you bet on the losing outcome)
+                    You bet on: {investment.aClaims > 0n 
+                      ? (market.type === 'top10' ? 'Yes (Top 10)' : market.projectA)
+                      : (market.type === 'top10' ? 'No (Not Top 10)' : market.projectB)}
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#999', marginTop: '2px', fontWeight: '400' }}>
+                    Winner was: {info.winner === 1 
+                      ? (market.type === 'top10' ? 'Yes (Top 10)' : market.projectA)
+                      : (market.type === 'top10' ? 'No (Not Top 10)' : market.projectB)}
                   </div>
                 </div>
               )}

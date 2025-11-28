@@ -56,11 +56,20 @@ export default function Leaderboard() {
         getTodayLeaderboard(),
         getYesterdayLeaderboard(),
       ]);
+      console.log('Today leaderboard data:', todayData);
+      console.log('Yesterday leaderboard data:', yesterdayData);
+      
+      if (todayData.length === 0) {
+        console.warn('⚠️  Today leaderboard is empty. Database might need seeding.');
+        setError('Today\'s leaderboard is empty. Please check if the database has been seeded.');
+      }
+      
       setToday(todayData);
       setYesterday(yesterdayData);
-    } catch (err) {
-      setError('Failed to load leaderboards');
-      console.error(err);
+    } catch (err: any) {
+      const errorMsg = err?.response?.data?.error || err?.message || 'Failed to load leaderboards';
+      setError(`Failed to load leaderboards: ${errorMsg}`);
+      console.error('Leaderboard load error:', err);
     } finally {
       setLoading(false);
     }
@@ -255,6 +264,24 @@ export default function Leaderboard() {
         </button>
       </div>
 
+      {today.length === 0 && !error && (
+        <div
+          style={{
+            padding: '24px',
+            marginBottom: '24px',
+            border: '2px solid #db0dce',
+            borderRadius: '12px',
+            backgroundColor: 'rgba(219, 13, 206, 0.1)',
+            textAlign: 'center',
+            color: '#fff',
+          }}
+        >
+          <p style={{ margin: 0, color: '#db0dce', fontWeight: '600' }}>
+            ⚠️ Today's leaderboard is empty. The database may need seeding or the backend API may not be running.
+          </p>
+        </div>
+      )}
+      
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(500px, 1fr))', gap: '40px' }}>
         <LeaderboardTable projects={today} title="Today's Leaderboard" ref={todayRef} />
         <LeaderboardTable projects={yesterday} title="Yesterday's Leaderboard" ref={yesterdayRef} />

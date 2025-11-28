@@ -8,8 +8,54 @@ export const Home = () => {
   const subtitleRef = useRef<HTMLParagraphElement>(null);
   const ctaRef = useRef<HTMLDivElement>(null);
   const featuresRef = useRef<HTMLDivElement>(null);
+  const backgroundRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    // Neural network / brain-style background animations
+    import('animejs').then(({ animate }) => {
+      if (backgroundRef.current) {
+        const nodes = backgroundRef.current.querySelectorAll('.neural-node');
+        const particles = backgroundRef.current.querySelectorAll('.neural-particle');
+        
+        // Animate nodes (neurons) - pulsing and glowing
+        nodes.forEach((node, index) => {
+          // Pulsing scale animation
+          animate(node, {
+            scale: [1, 1.3, 1],
+            duration: 2000 + index * 300,
+            easing: 'easeInOutSine',
+            loop: true,
+            delay: index * 200,
+          });
+          
+          // Opacity glow effect
+          animate(node, {
+            opacity: [0.4, 0.8, 0.4],
+            duration: 1500 + index * 200,
+            easing: 'easeInOutSine',
+            loop: true,
+            delay: index * 150,
+          });
+        });
+        
+        // Connections are animated via CSS (see style tag in component)
+        
+        // Animate particles flowing along connections
+        particles.forEach((particle, index) => {
+          animate(particle, {
+            translateX: [0, Math.random() * 400 - 200],
+            translateY: [0, Math.random() * 400 - 200],
+            opacity: [0, 1, 0],
+            scale: [0.5, 1, 0.5],
+            duration: 4000 + index * 600,
+            easing: 'easeInOutSine',
+            loop: true,
+            delay: index * 400,
+          });
+        });
+      }
+    });
+
     // Hero animations
     import('animejs').then(({ animate }) => {
       if (titleRef.current) {
@@ -95,6 +141,30 @@ export const Home = () => {
 
   return (
     <div style={{ minHeight: '100vh', backgroundColor: '#000', color: '#fff' }}>
+      <style>{`
+        @keyframes neuralFlow {
+          0% {
+            stroke-dashoffset: 1000;
+          }
+          100% {
+            stroke-dashoffset: -1000;
+          }
+        }
+        .neural-connection {
+          stroke-dasharray: 20 10;
+          animation: neuralFlow 4s linear infinite;
+        }
+        .neural-connection:nth-child(1) { animation-duration: 3s; animation-delay: 0s; }
+        .neural-connection:nth-child(2) { animation-duration: 3.5s; animation-delay: 0.3s; }
+        .neural-connection:nth-child(3) { animation-duration: 4s; animation-delay: 0.6s; }
+        .neural-connection:nth-child(4) { animation-duration: 3.2s; animation-delay: 0.2s; }
+        .neural-connection:nth-child(5) { animation-duration: 3.8s; animation-delay: 0.4s; }
+        .neural-connection:nth-child(6) { animation-duration: 4.2s; animation-delay: 0.8s; }
+        .neural-connection:nth-child(7) { animation-duration: 3.5s; animation-delay: 0.1s; }
+        .neural-connection:nth-child(8) { animation-duration: 3.7s; animation-delay: 0.5s; }
+        .neural-connection:nth-child(9) { animation-duration: 4s; animation-delay: 0.7s; }
+        .neural-connection:nth-child(10) { animation-duration: 3.3s; animation-delay: 0.2s; }
+      `}</style>
       {/* Hero Section */}
       <section
         ref={heroRef}
@@ -111,6 +181,333 @@ export const Home = () => {
           overflow: 'hidden',
         }}
       >
+        {/* Neural Network / Brain-style Background */}
+        <div
+          ref={backgroundRef}
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            width: '100%',
+            height: '100%',
+            pointerEvents: 'none',
+            zIndex: 0,
+          }}
+        >
+          {/* SVG for neural connections */}
+          <svg
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: '100%',
+              height: '100%',
+              overflow: 'visible',
+            }}
+          >
+            {/* Neural pathways/connections */}
+            <path
+              className="neural-connection"
+              d="M 15% 20% Q 25% 15%, 35% 20% T 50% 25%"
+              stroke="rgba(219, 13, 206, 0.3)"
+              strokeWidth="2"
+              fill="none"
+            />
+            <path
+              className="neural-connection"
+              d="M 20% 40% Q 30% 35%, 40% 40% T 55% 45%"
+              stroke="rgba(219, 13, 206, 0.25)"
+              strokeWidth="2"
+              fill="none"
+            />
+            <path
+              className="neural-connection"
+              d="M 25% 60% Q 35% 55%, 45% 60% T 60% 65%"
+              stroke="rgba(219, 13, 206, 0.3)"
+              strokeWidth="2"
+              fill="none"
+            />
+            <path
+              className="neural-connection"
+              d="M 50% 25% Q 60% 30%, 70% 35% T 85% 40%"
+              stroke="rgba(219, 13, 206, 0.25)"
+              strokeWidth="2"
+              fill="none"
+            />
+            <path
+              className="neural-connection"
+              d="M 45% 50% Q 55% 45%, 65% 50% T 80% 55%"
+              stroke="rgba(219, 13, 206, 0.3)"
+              strokeWidth="2"
+              fill="none"
+            />
+            <path
+              className="neural-connection"
+              d="M 30% 75% Q 40% 70%, 50% 75% T 70% 80%"
+              stroke="rgba(219, 13, 206, 0.25)"
+              strokeWidth="2"
+              fill="none"
+            />
+            <path
+              className="neural-connection"
+              d="M 15% 50% Q 20% 45%, 25% 50% Q 30% 55%, 35% 50%"
+              stroke="rgba(219, 13, 206, 0.2)"
+              strokeWidth="1.5"
+              fill="none"
+            />
+            <path
+              className="neural-connection"
+              d="M 65% 20% Q 70% 25%, 75% 30% Q 80% 35%, 85% 40%"
+              stroke="rgba(219, 13, 206, 0.2)"
+              strokeWidth="1.5"
+              fill="none"
+            />
+            <path
+              className="neural-connection"
+              d="M 40% 30% Q 50% 35%, 60% 40% Q 70% 45%, 75% 50%"
+              stroke="rgba(219, 13, 206, 0.25)"
+              strokeWidth="2"
+              fill="none"
+            />
+            <path
+              className="neural-connection"
+              d="M 20% 70% Q 35% 65%, 50% 70% Q 65% 75%, 80% 80%"
+              stroke="rgba(219, 13, 206, 0.3)"
+              strokeWidth="2"
+              fill="none"
+            />
+          </svg>
+
+          {/* Neural nodes (neurons) - positioned in brain-like clusters */}
+          <div
+            className="neural-node"
+            style={{
+              position: 'absolute',
+              top: '15%',
+              left: '15%',
+              width: '12px',
+              height: '12px',
+              borderRadius: '50%',
+              background: 'radial-gradient(circle, #db0dce 0%, rgba(219, 13, 206, 0.3) 70%)',
+              boxShadow: '0 0 20px rgba(219, 13, 206, 0.6), 0 0 40px rgba(219, 13, 206, 0.3)',
+            }}
+          />
+          <div
+            className="neural-node"
+            style={{
+              position: 'absolute',
+              top: '20%',
+              left: '35%',
+              width: '10px',
+              height: '10px',
+              borderRadius: '50%',
+              background: 'radial-gradient(circle, #db0dce 0%, rgba(219, 13, 206, 0.3) 70%)',
+              boxShadow: '0 0 15px rgba(219, 13, 206, 0.5), 0 0 30px rgba(219, 13, 206, 0.2)',
+            }}
+          />
+          <div
+            className="neural-node"
+            style={{
+              position: 'absolute',
+              top: '25%',
+              left: '50%',
+              width: '14px',
+              height: '14px',
+              borderRadius: '50%',
+              background: 'radial-gradient(circle, #db0dce 0%, rgba(219, 13, 206, 0.3) 70%)',
+              boxShadow: '0 0 25px rgba(219, 13, 206, 0.7), 0 0 50px rgba(219, 13, 206, 0.4)',
+            }}
+          />
+          <div
+            className="neural-node"
+            style={{
+              position: 'absolute',
+              top: '40%',
+              left: '20%',
+              width: '11px',
+              height: '11px',
+              borderRadius: '50%',
+              background: 'radial-gradient(circle, #db0dce 0%, rgba(219, 13, 206, 0.3) 70%)',
+              boxShadow: '0 0 18px rgba(219, 13, 206, 0.5), 0 0 35px rgba(219, 13, 206, 0.3)',
+            }}
+          />
+          <div
+            className="neural-node"
+            style={{
+              position: 'absolute',
+              top: '40%',
+              left: '40%',
+              width: '13px',
+              height: '13px',
+              borderRadius: '50%',
+              background: 'radial-gradient(circle, #db0dce 0%, rgba(219, 13, 206, 0.3) 70%)',
+              boxShadow: '0 0 22px rgba(219, 13, 206, 0.6), 0 0 45px rgba(219, 13, 206, 0.3)',
+            }}
+          />
+          <div
+            className="neural-node"
+            style={{
+              position: 'absolute',
+              top: '45%',
+              left: '55%',
+              width: '10px',
+              height: '10px',
+              borderRadius: '50%',
+              background: 'radial-gradient(circle, #db0dce 0%, rgba(219, 13, 206, 0.3) 70%)',
+              boxShadow: '0 0 15px rgba(219, 13, 206, 0.5), 0 0 30px rgba(219, 13, 206, 0.2)',
+            }}
+          />
+          <div
+            className="neural-node"
+            style={{
+              position: 'absolute',
+              top: '50%',
+              left: '25%',
+              width: '12px',
+              height: '12px',
+              borderRadius: '50%',
+              background: 'radial-gradient(circle, #db0dce 0%, rgba(219, 13, 206, 0.3) 70%)',
+              boxShadow: '0 0 20px rgba(219, 13, 206, 0.6), 0 0 40px rgba(219, 13, 206, 0.3)',
+            }}
+          />
+          <div
+            className="neural-node"
+            style={{
+              position: 'absolute',
+              top: '60%',
+              left: '45%',
+              width: '11px',
+              height: '11px',
+              borderRadius: '50%',
+              background: 'radial-gradient(circle, #db0dce 0%, rgba(219, 13, 206, 0.3) 70%)',
+              boxShadow: '0 0 18px rgba(219, 13, 206, 0.5), 0 0 35px rgba(219, 13, 206, 0.3)',
+            }}
+          />
+          <div
+            className="neural-node"
+            style={{
+              position: 'absolute',
+              top: '65%',
+              left: '60%',
+              width: '13px',
+              height: '13px',
+              borderRadius: '50%',
+              background: 'radial-gradient(circle, #db0dce 0%, rgba(219, 13, 206, 0.3) 70%)',
+              boxShadow: '0 0 22px rgba(219, 13, 206, 0.6), 0 0 45px rgba(219, 13, 206, 0.3)',
+            }}
+          />
+          <div
+            className="neural-node"
+            style={{
+              position: 'absolute',
+              top: '30%',
+              left: '70%',
+              width: '12px',
+              height: '12px',
+              borderRadius: '50%',
+              background: 'radial-gradient(circle, #db0dce 0%, rgba(219, 13, 206, 0.3) 70%)',
+              boxShadow: '0 0 20px rgba(219, 13, 206, 0.6), 0 0 40px rgba(219, 13, 206, 0.3)',
+            }}
+          />
+          <div
+            className="neural-node"
+            style={{
+              position: 'absolute',
+              top: '35%',
+              left: '85%',
+              width: '10px',
+              height: '10px',
+              borderRadius: '50%',
+              background: 'radial-gradient(circle, #db0dce 0%, rgba(219, 13, 206, 0.3) 70%)',
+              boxShadow: '0 0 15px rgba(219, 13, 206, 0.5), 0 0 30px rgba(219, 13, 206, 0.2)',
+            }}
+          />
+          <div
+            className="neural-node"
+            style={{
+              position: 'absolute',
+              top: '50%',
+              left: '75%',
+              width: '14px',
+              height: '14px',
+              borderRadius: '50%',
+              background: 'radial-gradient(circle, #db0dce 0%, rgba(219, 13, 206, 0.3) 70%)',
+              boxShadow: '0 0 25px rgba(219, 13, 206, 0.7), 0 0 50px rgba(219, 13, 206, 0.4)',
+            }}
+          />
+          <div
+            className="neural-node"
+            style={{
+              position: 'absolute',
+              top: '55%',
+              left: '80%',
+              width: '11px',
+              height: '11px',
+              borderRadius: '50%',
+              background: 'radial-gradient(circle, #db0dce 0%, rgba(219, 13, 206, 0.3) 70%)',
+              boxShadow: '0 0 18px rgba(219, 13, 206, 0.5), 0 0 35px rgba(219, 13, 206, 0.3)',
+            }}
+          />
+          <div
+            className="neural-node"
+            style={{
+              position: 'absolute',
+              top: '75%',
+              left: '30%',
+              width: '12px',
+              height: '12px',
+              borderRadius: '50%',
+              background: 'radial-gradient(circle, #db0dce 0%, rgba(219, 13, 206, 0.3) 70%)',
+              boxShadow: '0 0 20px rgba(219, 13, 206, 0.6), 0 0 40px rgba(219, 13, 206, 0.3)',
+            }}
+          />
+          <div
+            className="neural-node"
+            style={{
+              position: 'absolute',
+              top: '80%',
+              left: '50%',
+              width: '13px',
+              height: '13px',
+              borderRadius: '50%',
+              background: 'radial-gradient(circle, #db0dce 0%, rgba(219, 13, 206, 0.3) 70%)',
+              boxShadow: '0 0 22px rgba(219, 13, 206, 0.6), 0 0 45px rgba(219, 13, 206, 0.3)',
+            }}
+          />
+          <div
+            className="neural-node"
+            style={{
+              position: 'absolute',
+              top: '80%',
+              left: '70%',
+              width: '10px',
+              height: '10px',
+              borderRadius: '50%',
+              background: 'radial-gradient(circle, #db0dce 0%, rgba(219, 13, 206, 0.3) 70%)',
+              boxShadow: '0 0 15px rgba(219, 13, 206, 0.5), 0 0 30px rgba(219, 13, 206, 0.2)',
+            }}
+          />
+
+          {/* Flowing particles along connections */}
+          {[...Array(8)].map((_, i) => (
+            <div
+              key={i}
+              className="neural-particle"
+              style={{
+                position: 'absolute',
+                top: `${15 + i * 8}%`,
+                left: `${20 + i * 7}%`,
+                width: '4px',
+                height: '4px',
+                borderRadius: '50%',
+                background: '#db0dce',
+                boxShadow: '0 0 10px rgba(219, 13, 206, 0.8), 0 0 20px rgba(219, 13, 206, 0.4)',
+              }}
+            />
+          ))}
+        </div>
+
+        {/* Gradient blurs */}
         <div
           style={{
             position: 'absolute',
@@ -121,6 +518,7 @@ export const Home = () => {
             background: 'radial-gradient(circle, rgba(219, 13, 206, 0.3) 0%, transparent 70%)',
             borderRadius: '50%',
             filter: 'blur(60px)',
+            zIndex: 1,
           }}
         />
         <div
@@ -133,6 +531,7 @@ export const Home = () => {
             background: 'radial-gradient(circle, rgba(219, 13, 206, 0.2) 0%, transparent 70%)',
             borderRadius: '50%',
             filter: 'blur(80px)',
+            zIndex: 1,
           }}
         />
 
@@ -148,6 +547,8 @@ export const Home = () => {
             backgroundClip: 'text',
             lineHeight: '1.1',
             letterSpacing: '-2px',
+            position: 'relative',
+            zIndex: 2,
           }}
         >
           Predict the future
@@ -163,6 +564,8 @@ export const Home = () => {
             maxWidth: '700px',
             margin: '0 0 48px 0',
             lineHeight: '1.6',
+            position: 'relative',
+            zIndex: 2,
           }}
         >
           Bet on which projects will dominate the social mindshare leaderboard.
@@ -170,7 +573,7 @@ export const Home = () => {
           Win big when your predictions come true.
         </p>
 
-        <div ref={ctaRef} style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', justifyContent: 'center' }}>
+        <div ref={ctaRef} style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', justifyContent: 'center', position: 'relative', zIndex: 2 }}>
           <Link
             to="/markets"
             style={{
